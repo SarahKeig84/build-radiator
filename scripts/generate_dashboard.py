@@ -227,6 +227,8 @@ def latest_test_signals(owner, repo, ref, max_items=12):
     else:
         overall = {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
 
+    return signals, overall
+
 def build_cards():
     items = []
     for r in list_repos(ORG):
