@@ -10,7 +10,7 @@ TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
 # Heuristics: what looks like tests vs. non-test infra
-TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|ci)", re.I)
+TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa)", re.I)
 NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)", re.I)
 
 def gh(url, params=None):
@@ -140,39 +140,48 @@ def latest_test_signals(owner, repo, ref, max_items=12):
         for wf in wfs:
             name = (wf.get("name") or "")
             path = (wf.get("path") or "")
+
+            # Only consider workflows that look like tests
             if not (TEST_WORKFLOW_RE.search(name) or TEST_WORKFLOW_RE.search(path)):
                 continue
             if NON_TEST_HINT.search(name) or NON_TEST_HINT.search(path):
                 continue
 
-            runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wf['id']}/runs",
-                      params={"branch": ref, "per_page": 1}).get("workflow_runs", [])
+            runs = gh(
+                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wf['id']}/runs",
+                params={"branch": ref, "per_page": 1}
+            ).get("workflow_runs", [])
             if not runs:
                 continue
             run = runs[0]
             run_id = run.get("id")
 
-            # Try to get job-level signals (matrix jobs => per-project)
+            # Include ALL jobs from this workflow run (monorepos often name jobs per project)
             try:
-                jobs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
-                          params={"per_page": 100}).get("jobs", [])
+                jobs = gh(
+                    f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+                    params={"per_page": 100}
+                ).get("jobs", [])
             except Exception:
                 jobs = []
 
             added_job = False
             for job in jobs:
-                jname = job.get("name","")
-                if TEST_WORKFLOW_RE.search(jname) and not NON_TEST_HINT.search(jname):
-                    signals.append({
-                        "label": jname,
-                        "status": job.get("status"),
-                        "conclusion": job.get("conclusion"),
-                        "html_url": job.get("html_url") or job.get("url"),
-                        "updated_at": job.get("completed_at") or job.get("started_at") or run.get("updated_at"),
-                        "source": "workflow:job",
-                    })
-                    added_job = True
-            # If no job matched, fall back to workflow-level run
+                jname = job.get("name", "")
+                # Skip obvious non-test jobs (docs/lint/publish/etc.), but don't require "test" in the name
+                if NON_TEST_HINT.search(jname):
+                    continue
+                signals.append({
+                    "label": jname,
+                    "status": job.get("status"),
+                    "conclusion": job.get("conclusion"),
+                    "html_url": job.get("html_url") or job.get("url"),
+                    "updated_at": job.get("completed_at") or job.get("started_at") or run.get("updated_at"),
+                    "source": "workflow:job",
+                })
+                added_job = True
+
+            # Fallback to the workflow-level run if no jobs were added
             if not added_job:
                 signals.append({
                     "label": name or "Tests",
