@@ -10,7 +10,7 @@ TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
 # Heuristics: what looks like tests vs. non-test infra
-TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa)", re.I)
+TEST_WORKFLOW_RE = re.compile(r"(test|tests|testsuites|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa)", re.I)
 NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)", re.I)
 
 def gh(url, params=None):
