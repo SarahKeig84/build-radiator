@@ -216,17 +216,16 @@ def latest_test_signals(owner, repo, ref, max_items=12):
             dedup[key] = s
     signals = list(dedup.values())
 
-    # Sort: worst severity first, then newest first
-    signals.sort(key=lambda s: ( -severity(s.get("status"), s.get("conclusion")), s.get("updated_at") or "" ), reverse=True)
+    # Sort by priority (fail first) and, within the same priority, newest first
+    signals.sort(key=lambda s: s.get("updated_at") or "", reverse=True)  # newest first
+    signals.sort(key=lambda s: priority(s.get("status"), s.get("conclusion")))  # stable sort puts failures first
     signals = signals[:max_items]
 
-    # Overall: pick the worst severity among signals (tie-break by most recent)
+    # Overall = worst (lowest priority value); tie-break by recency
     if signals:
-        overall = max(signals, key=lambda s: (severity(s.get("status"), s.get("conclusion")), s.get("updated_at") or ""))
+        overall = min(signals, key=lambda s: (priority(s.get("status"), s.get("conclusion")), -(s.get("updated_at") is not None)))
     else:
         overall = {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
-
-    return signals, overall
 
 def build_cards():
     items = []
