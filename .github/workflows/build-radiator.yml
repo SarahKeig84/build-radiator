@@ -30,10 +30,11 @@ jobs:
 
       - name: Generate dashboard
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT != '' && secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           ORG: netboxlabs
         run: |
           python scripts/generate_dashboard.py
+
 
 
       - name: Upload artifact
