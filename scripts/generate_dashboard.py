@@ -10,8 +10,8 @@ TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
 # Heuristics: what looks like tests vs. non-test infra
-TEST_WORKFLOW_RE = re.compile(r"(test|tests|testsuites|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa)", re.I)
-NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)", re.I)
+TEST_JOB_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite|cypress|jest)", re.I)
+NON_TEST_JOB_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql|upload|allure|qase|report|artifact|cache|setup|install|build)", re.I)
 
 def gh(url, params=None):
     r = requests.get(url, headers=HEADERS, params=params)
@@ -120,65 +120,55 @@ def priority(status, conclusion):
 
 def latest_test_signals(owner, repo, ref, max_items=12):
     """
-    Collect multiple test signals:
-      - Latest run per 'test-like' workflow on the given branch; include job-level results if present.
-      - Check runs on HEAD commit that look like tests.
+    Collect multiple test signals by scanning recent runs across ALL workflows on the branch
+    (so reusable workflows are included via their caller runs), plus check runs on HEAD.
     Returns (signals:list, overall:dict)
     each signal: {label, status, conclusion, html_url, updated_at, source}
     """
     signals = []
 
-    # 1) Workflows that look like tests
+    # 1) Recent workflow runs on the default branch (grab jobs from each)
     try:
-        wfs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows").get("workflows", [])
-        for wf in wfs:
-            name = (wf.get("name") or "")
-            path = (wf.get("path") or "")
-
-            # Only consider workflows that look like tests
-            if not (TEST_WORKFLOW_RE.search(name) or TEST_WORKFLOW_RE.search(path)):
-                continue
-            if NON_TEST_HINT.search(name) or NON_TEST_HINT.search(path):
-                continue
-
-            runs = gh(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wf['id']}/runs",
-                params={"branch": ref, "per_page": 1}
-            ).get("workflow_runs", [])
-            if not runs:
-                continue
-            run = runs[0]
+        runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/runs",
+                  params={"branch": ref, "per_page": 20}).get("workflow_runs", [])
+        for run in runs:
+            wf_name = (run.get("name") or "")
+            wf_path = (run.get("path") or "")
             run_id = run.get("id")
 
-            # Include ALL jobs from this workflow run (monorepos often name jobs per project)
+            # Is the *workflow* itself test-like?
+            run_is_test = (
+                (TEST_WORKFLOW_RE.search(wf_name) or TEST_WORKFLOW_RE.search(wf_path))
+                and not (NON_TEST_HINT.search(wf_name) or NON_TEST_HINT.search(wf_path))
+            )
+
+            # Pull all jobs for this run
             try:
-                jobs = gh(
-                    f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
-                    params={"per_page": 100}
-                ).get("jobs", [])
+                jobs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+                          params={"per_page": 100}).get("jobs", [])
             except Exception:
                 jobs = []
 
             added_job = False
             for job in jobs:
-                jname = job.get("name", "")
-                # Skip obvious non-test jobs (docs/lint/publish/etc.), but don't require "test" in the name
-                if NON_TEST_HINT.search(jname):
-                    continue
-                signals.append({
-                    "label": jname,
-                    "status": job.get("status"),
-                    "conclusion": job.get("conclusion"),
-                    "html_url": job.get("html_url") or job.get("url"),
-                    "updated_at": job.get("completed_at") or job.get("started_at") or run.get("updated_at"),
-                    "source": "workflow:job",
-                })
-                added_job = True
+                jname = job.get("name","")
+                # Keep jobs that look like tests OR all jobs from a test-like workflow
+                if (run_is_test and not NON_TEST_JOB_HINT.search(jname)) or \
+                   (TEST_JOB_RE.search(jname) and not NON_TEST_JOB_HINT.search(jname)):
+                    signals.append({
+                        "label": jname,
+                        "status": job.get("status"),
+                        "conclusion": job.get("conclusion"),
+                        "html_url": job.get("html_url") or job.get("url"),
+                        "updated_at": job.get("completed_at") or job.get("started_at") or run.get("updated_at"),
+                        "source": "workflow:job",
+                    })
+                    added_job = True
 
-            # Fallback to the workflow-level run if no jobs were added
-            if not added_job:
+            # If workflow is test-like but no jobs matched, keep the workflow-level signal
+            if run_is_test and not added_job:
                 signals.append({
-                    "label": name or "Tests",
+                    "label": wf_name or "Tests",
                     "status": run.get("status"),
                     "conclusion": run.get("conclusion"),
                     "html_url": run.get("html_url"),
@@ -188,7 +178,7 @@ def latest_test_signals(owner, repo, ref, max_items=12):
     except Exception:
         pass
 
-    # 2) Check runs on HEAD (often granular, includes third-party CI)
+    # 2) Check runs on HEAD (granular signals from external tools)
     try:
         sha = get_head_sha(owner, repo, ref)
         if sha:
@@ -196,7 +186,7 @@ def latest_test_signals(owner, repo, ref, max_items=12):
                         params={"per_page": 100}).get("check_runs", [])
             for cr in checks:
                 name = cr.get("name","")
-                if TEST_WORKFLOW_RE.search(name) and not NON_TEST_HINT.search(name):
+                if TEST_JOB_RE.search(name) and not NON_TEST_JOB_HINT.search(name):
                     signals.append({
                         "label": name,
                         "status": cr.get("status"),
@@ -218,12 +208,12 @@ def latest_test_signals(owner, repo, ref, max_items=12):
 
     # Sort by priority (fail first) and, within the same priority, newest first
     signals.sort(key=lambda s: s.get("updated_at") or "", reverse=True)  # newest first
-    signals.sort(key=lambda s: priority(s.get("status"), s.get("conclusion")))  # stable sort puts failures first
+    signals.sort(key=lambda s: priority(s.get("status"), s.get("conclusion")))  # failures first
     signals = signals[:max_items]
 
-    # Overall = worst (lowest priority value); tie-break by recency
+    # Overall = worst (lowest priority value)
     if signals:
-        overall = min(signals, key=lambda s: (priority(s.get("status"), s.get("conclusion")), -(s.get("updated_at") is not None)))
+        overall = min(signals, key=lambda s: priority(s.get("status"), s.get("conclusion")))
     else:
         overall = {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
 
