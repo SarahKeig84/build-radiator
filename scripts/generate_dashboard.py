@@ -9,14 +9,19 @@ ORG = os.environ.get("ORG","netboxlabs")
 TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
+TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|ci)", re.I)
+# Optional: treat these as "non-test" even if they match generic CI patterns
+NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)", re.I)
+
 def gh(url, params=None):
     r = requests.get(url, headers=HEADERS, params=params)
     r.raise_for_status()
     return r.json()
 
 def list_repos(org):
+    """Return all repos visible to the token, including private org repos."""
     repos, page = [], 1
-    # 1) Try the org endpoint (works great with classic PATs)
+    # Org endpoint (best when using classic PATs)
     while True:
         data = gh(f"https://api.github.com/orgs/{org}/repos",
                   params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"})
@@ -24,8 +29,7 @@ def list_repos(org):
             break
         repos.extend(data)
         page += 1
-
-    # 2) Also query user-owned repos and include ones owned by the org (helps with fine-grained PATs)
+    # User endpoint (helps with some fine-grained PATs)
     names = {r["name"] for r in repos}
     page = 1
     while True:
@@ -38,9 +42,7 @@ def list_repos(org):
                 repos.append(r)
                 names.add(r["name"])
         page += 1
-
     return repos
-
 
 def read_file_version(owner, repo, path, ref):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
@@ -98,23 +100,81 @@ def detect_version(owner, repo, ref):
         pass
     return None, None
 
-def main_status(owner, repo, ref):
-    runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/runs",
-              params={"branch": ref, "per_page": 1})
-    if runs.get("workflow_runs"):
-        run = runs["workflow_runs"][0]
-        return {
-            "workflow": run.get("name"),
-            "status": run.get("status"),
-            "conclusion": run.get("conclusion"),
-            "html_url": run.get("html_url"),
-            "updated_at": run.get("updated_at"),
-        }
-    return None
-
 def default_branch(owner, repo):
     r = gh(f"https://api.github.com/repos/{owner}/{repo}")
     return r.get("default_branch","main")
+
+def get_head_sha(owner, repo, ref):
+    data = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}")
+    return data.get("sha")
+
+def latest_test_run(owner, repo, ref):
+    """
+    Prefer the most recent *test* workflow run on the default branch.
+    Fallback: look at Check Runs on HEAD and pick one that looks like tests.
+    Returns a dict with: status, conclusion, html_url, updated_at, label, source.
+    """
+    # 1) Look through workflows whose name/path smells like tests
+    try:
+        wfs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows").get("workflows", [])
+        candidate_ids = []
+        for wf in wfs:
+            name = wf.get("name") or ""
+            path = wf.get("path") or ""
+            if TEST_WORKFLOW_RE.search(name) or TEST_WORKFLOW_RE.search(path):
+                if not NON_TEST_HINT.search(name) and not NON_TEST_HINT.search(path):
+                    candidate_ids.append(wf["id"])
+
+        best = None
+        for wid in candidate_ids:
+            runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wid}/runs",
+                      params={"branch": ref, "per_page": 1})
+            wruns = runs.get("workflow_runs", [])
+            if not wruns:
+                continue
+            run = wruns[0]
+            cand = {
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "html_url": run.get("html_url"),
+                "updated_at": run.get("updated_at"),
+                "label": run.get("name") or "Tests",
+                "source": "workflow",
+            }
+            if not best or (cand["updated_at"] or "") > (best["updated_at"] or ""):
+                best = cand
+        if best:
+            return best
+    except Exception:
+        pass
+
+    # 2) Fallback: check runs on HEAD commit (often include e.g. "pytest", "Unit tests")
+    try:
+        sha = get_head_sha(owner, repo, ref)
+        if sha:
+            checks = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs",
+                        params={"per_page": 100})
+            best = None
+            for cr in checks.get("check_runs", []):
+                name = cr.get("name","")
+                if TEST_WORKFLOW_RE.search(name) and not NON_TEST_HINT.search(name):
+                    cand = {
+                        "status": cr.get("status"),
+                        "conclusion": cr.get("conclusion"),
+                        "html_url": cr.get("html_url") or cr.get("details_url"),
+                        "updated_at": cr.get("completed_at") or cr.get("started_at"),
+                        "label": name,
+                        "source": "checks",
+                    }
+                    if not best or (cand["updated_at"] or "") > (best["updated_at"] or ""):
+                        best = cand
+            if best:
+                return best
+    except Exception:
+        pass
+
+    # 3) Nothing found
+    return {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
 
 def build_cards():
     items = []
@@ -124,13 +184,13 @@ def build_cards():
             continue
         ref = default_branch(ORG, repo)
         ver, source = detect_version(ORG, repo, ref)
-        status = main_status(ORG, repo, ref)
+        tstatus = latest_test_run(ORG, repo, ref)
         items.append({
             "repo": repo,
             "default_branch": ref,
             "version": ver or "—",
             "version_source": source or "n/a",
-            "status": status or {"status": "unknown", "conclusion": None, "workflow": None, "html_url": None, "updated_at": None},
+            "status": tstatus,  # now reflects TESTS
             "html_url": r["html_url"],
         })
     return sorted(items, key=lambda x: x["repo"].lower())
@@ -153,7 +213,7 @@ def render(items):
   code { background:#f6f8fa; padding:2px 4px; border-radius:6px; }
 </style>
 <h1>NetBox Labs — Build Radiator</h1>
-<p class="meta">Shows version on default branch and latest CI result for each repo. Auto-refreshes every 2 minutes.</p>
+<p class="meta">Version on default branch + latest <strong>test</strong> result per repo (auto-refreshes every 2 minutes).</p>
 <div class="grid">
 {% for it in items %}
   {% set c = "unk" %}
@@ -166,9 +226,9 @@ def render(items):
     <div>Version: <strong>{{ it.version }}</strong> <span class="meta">(from {{ it.version_source }})</span></div>
     <div>Branch: <code>{{ it.default_branch }}</code></div>
     {% if it.status.html_url %}
-      <div>CI: <a href="{{ it.status.html_url }}">{{ it.status.workflow or "workflow" }}</a></div>
+      <div>Tests: <a href="{{ it.status.html_url }}">{{ it.status.label }}</a> <span class="meta">({{ it.status.source }})</span></div>
     {% else %}
-      <div class="meta">CI: no recent runs on {{ it.default_branch }}</div>
+      <div class="meta">Tests: no recent test signals on {{ it.default_branch }}</div>
     {% endif %}
   </div>
 {% endfor %}
