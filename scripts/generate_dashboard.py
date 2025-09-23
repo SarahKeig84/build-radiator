@@ -9,8 +9,8 @@ ORG = os.environ.get("ORG","netboxlabs")
 TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
-TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|ci)", re.I)
-# Optional: treat these as "non-test" even if they match generic CI patterns
+# Heuristics: what looks like tests vs. non-test infra
+TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|ci)", re.I)
 NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)", re.I)
 
 def gh(url, params=None):
@@ -21,7 +21,7 @@ def gh(url, params=None):
 def list_repos(org):
     """Return all repos visible to the token, including private org repos."""
     repos, page = [], 1
-    # Org endpoint (best when using classic PATs)
+    # Org endpoint
     while True:
         data = gh(f"https://api.github.com/orgs/{org}/repos",
                   params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"})
@@ -29,7 +29,7 @@ def list_repos(org):
             break
         repos.extend(data)
         page += 1
-    # User endpoint (helps with some fine-grained PATs)
+    # User endpoint (helps with fine-grained PATs)
     names = {r["name"] for r in repos}
     page = 1
     while True:
@@ -108,73 +108,122 @@ def get_head_sha(owner, repo, ref):
     data = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}")
     return data.get("sha")
 
-def latest_test_run(owner, repo, ref):
+def severity(status, conclusion):
     """
-    Prefer the most recent *test* workflow run on the default branch.
-    Fallback: look at Check Runs on HEAD and pick one that looks like tests.
-    Returns a dict with: status, conclusion, html_url, updated_at, label, source.
+    Lower is better:
+      0 success
+      1 in_progress/queued
+      2 neutral/unknown
+      3 failure/timed_out/cancelled/action_required
     """
-    # 1) Look through workflows whose name/path smells like tests
+    if conclusion == "success":
+        return 0
+    if status in ("in_progress","queued"):
+        return 1
+    if conclusion in ("failure","timed_out","cancelled","action_required"):
+        return 3
+    return 2
+
+def latest_test_signals(owner, repo, ref, max_items=12):
+    """
+    Collect multiple test signals:
+      - Latest run per 'test-like' workflow on the given branch; include job-level results if present.
+      - Check runs on HEAD commit that look like tests.
+    Returns (signals:list, overall:dict)
+    each signal: {label, status, conclusion, html_url, updated_at, source}
+    """
+    signals = []
+
+    # 1) Workflows that look like tests
     try:
         wfs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows").get("workflows", [])
-        candidate_ids = []
         for wf in wfs:
-            name = wf.get("name") or ""
-            path = wf.get("path") or ""
-            if TEST_WORKFLOW_RE.search(name) or TEST_WORKFLOW_RE.search(path):
-                if not NON_TEST_HINT.search(name) and not NON_TEST_HINT.search(path):
-                    candidate_ids.append(wf["id"])
-
-        best = None
-        for wid in candidate_ids:
-            runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wid}/runs",
-                      params={"branch": ref, "per_page": 1})
-            wruns = runs.get("workflow_runs", [])
-            if not wruns:
+            name = (wf.get("name") or "")
+            path = (wf.get("path") or "")
+            if not (TEST_WORKFLOW_RE.search(name) or TEST_WORKFLOW_RE.search(path)):
                 continue
-            run = wruns[0]
-            cand = {
-                "status": run.get("status"),
-                "conclusion": run.get("conclusion"),
-                "html_url": run.get("html_url"),
-                "updated_at": run.get("updated_at"),
-                "label": run.get("name") or "Tests",
-                "source": "workflow",
-            }
-            if not best or (cand["updated_at"] or "") > (best["updated_at"] or ""):
-                best = cand
-        if best:
-            return best
+            if NON_TEST_HINT.search(name) or NON_TEST_HINT.search(path):
+                continue
+
+            runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wf['id']}/runs",
+                      params={"branch": ref, "per_page": 1}).get("workflow_runs", [])
+            if not runs:
+                continue
+            run = runs[0]
+            run_id = run.get("id")
+
+            # Try to get job-level signals (matrix jobs => per-project)
+            try:
+                jobs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+                          params={"per_page": 100}).get("jobs", [])
+            except Exception:
+                jobs = []
+
+            added_job = False
+            for job in jobs:
+                jname = job.get("name","")
+                if TEST_WORKFLOW_RE.search(jname) and not NON_TEST_HINT.search(jname):
+                    signals.append({
+                        "label": jname,
+                        "status": job.get("status"),
+                        "conclusion": job.get("conclusion"),
+                        "html_url": job.get("html_url") or job.get("url"),
+                        "updated_at": job.get("completed_at") or job.get("started_at") or run.get("updated_at"),
+                        "source": "workflow:job",
+                    })
+                    added_job = True
+            # If no job matched, fall back to workflow-level run
+            if not added_job:
+                signals.append({
+                    "label": name or "Tests",
+                    "status": run.get("status"),
+                    "conclusion": run.get("conclusion"),
+                    "html_url": run.get("html_url"),
+                    "updated_at": run.get("updated_at"),
+                    "source": "workflow",
+                })
     except Exception:
         pass
 
-    # 2) Fallback: check runs on HEAD commit (often include e.g. "pytest", "Unit tests")
+    # 2) Check runs on HEAD (often granular, includes third-party CI)
     try:
         sha = get_head_sha(owner, repo, ref)
         if sha:
             checks = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs",
-                        params={"per_page": 100})
-            best = None
-            for cr in checks.get("check_runs", []):
+                        params={"per_page": 100}).get("check_runs", [])
+            for cr in checks:
                 name = cr.get("name","")
                 if TEST_WORKFLOW_RE.search(name) and not NON_TEST_HINT.search(name):
-                    cand = {
+                    signals.append({
+                        "label": name,
                         "status": cr.get("status"),
                         "conclusion": cr.get("conclusion"),
                         "html_url": cr.get("html_url") or cr.get("details_url"),
                         "updated_at": cr.get("completed_at") or cr.get("started_at"),
-                        "label": name,
                         "source": "checks",
-                    }
-                    if not best or (cand["updated_at"] or "") > (best["updated_at"] or ""):
-                        best = cand
-            if best:
-                return best
+                    })
     except Exception:
         pass
 
-    # 3) Nothing found
-    return {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
+    # 3) Deduplicate by label, keep the most recent
+    dedup = {}
+    for s in signals:
+        key = s["label"].strip().lower()
+        if key not in dedup or (s.get("updated_at") or "") > (dedup[key].get("updated_at") or ""):
+            dedup[key] = s
+    signals = list(dedup.values())
+
+    # Sort: worst severity first, then newest first
+    signals.sort(key=lambda s: ( -severity(s.get("status"), s.get("conclusion")), s.get("updated_at") or "" ), reverse=True)
+    signals = signals[:max_items]
+
+    # Overall: pick the worst severity among signals (tie-break by most recent)
+    if signals:
+        overall = max(signals, key=lambda s: (severity(s.get("status"), s.get("conclusion")), s.get("updated_at") or ""))
+    else:
+        overall = {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
+
+    return signals, overall
 
 def build_cards():
     items = []
@@ -183,14 +232,15 @@ def build_cards():
         if r.get("archived"):
             continue
         ref = default_branch(ORG, repo)
-        ver, source = detect_version(ORG, repo, ref)
-        tstatus = latest_test_run(ORG, repo, ref)
+        ver, vsrc = detect_version(ORG, repo, ref)
+        subtests, overall = latest_test_signals(ORG, repo, ref, max_items=12)
         items.append({
             "repo": repo,
             "default_branch": ref,
             "version": ver or "—",
-            "version_source": source or "n/a",
-            "status": tstatus,  # now reflects TESTS
+            "version_source": vsrc or "n/a",
+            "overall": overall,     # overall per repo
+            "subtests": subtests,   # list of per-project signals
             "html_url": r["html_url"],
         })
     return sorted(items, key=lambda x: x["repo"].lower())
@@ -204,29 +254,46 @@ def render(items):
 <meta http-equiv="refresh" content="120">
 <style>
   body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); gap: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(360px,1fr)); gap: 16px; }
   .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; }
   .h { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
   .dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:8px;}
   .ok { background:#22c55e } .fail { background:#ef4444 } .run { background:#f59e0b } .unk { background:#9ca3af }
   .meta { color:#666; font-size:12px }
   code { background:#f6f8fa; padding:2px 4px; border-radius:6px; }
+  ul { margin: 8px 0 0 0; padding-left: 18px; }
+  li { margin: 4px 0; }
+  .label { font-weight: 500; }
 </style>
 <h1>NetBox Labs — Build Radiator</h1>
-<p class="meta">Version on default branch + latest <strong>test</strong> result per repo (auto-refreshes every 2 minutes).</p>
+<p class="meta">Version on default branch + latest <strong>tests</strong> per repo. For monorepos, we show per-project test jobs/workflows when available. Auto-refreshes every 2 minutes.</p>
 <div class="grid">
 {% for it in items %}
   {% set c = "unk" %}
-  {% if it.status.conclusion == "success" %}{% set c="ok" %}{% elif it.status.conclusion in ["failure","timed_out","cancelled","action_required"] %}{% set c="fail" %}{% elif it.status.status in ["in_progress","queued"] %}{% set c="run" %}{% endif %}
+  {% if it.overall.conclusion == "success" %}{% set c="ok" %}{% elif it.overall.conclusion in ["failure","timed_out","cancelled","action_required"] %}{% set c="fail" %}{% elif it.overall.status in ["in_progress","queued"] %}{% set c="run" %}{% endif %}
   <div class="card">
     <div class="h">
       <a href="{{ it.html_url }}"><strong>{{ it.repo }}</strong></a>
-      <span title="{{ it.status.conclusion or it.status.status }}"><span class="dot {{ c }}"></span></span>
+      <span title="{{ it.overall.conclusion or it.overall.status }}"><span class="dot {{ c }}"></span></span>
     </div>
     <div>Version: <strong>{{ it.version }}</strong> <span class="meta">(from {{ it.version_source }})</span></div>
     <div>Branch: <code>{{ it.default_branch }}</code></div>
-    {% if it.status.html_url %}
-      <div>Tests: <a href="{{ it.status.html_url }}">{{ it.status.label }}</a> <span class="meta">({{ it.status.source }})</span></div>
+    {% if it.subtests and it.subtests|length > 0 %}
+      <div class="meta" style="margin-top:6px;">Tests:</div>
+      <ul>
+        {% for s in it.subtests[:6] %}
+          {% set sc = "unk" %}
+          {% if s.conclusion == "success" %}{% set sc="ok" %}{% elif s.conclusion in ["failure","timed_out","cancelled","action_required"] %}{% set sc="fail" %}{% elif s.status in ["in_progress","queued"] %}{% set sc="run" %}{% endif %}
+          <li>
+            <span class="dot {{ sc }}"></span>
+            {% if s.html_url %}<a href="{{ s.html_url }}" class="label">{{ s.label }}</a>{% else %}<span class="label">{{ s.label }}</span>{% endif %}
+            <span class="meta">({{ s.source }})</span>
+          </li>
+        {% endfor %}
+        {% if it.subtests|length > 6 %}
+          <li class="meta">…and {{ it.subtests|length - 6 }} more</li>
+        {% endif %}
+      </ul>
     {% else %}
       <div class="meta">Tests: no recent test signals on {{ it.default_branch }}</div>
     {% endif %}
