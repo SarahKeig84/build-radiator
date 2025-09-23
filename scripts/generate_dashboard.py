@@ -268,6 +268,9 @@ def render(items):
   ul { margin: 8px 0 0 0; padding-left: 18px; }
   li { margin: 4px 0; }
   .label { font-weight: 500; }
+  details.more { margin-top: 6px; }
+  details.more summary { cursor: pointer; list-style: none; }
+  details.more summary::-webkit-details-marker { display: none; }
 </style>
 <h1>NetBox Labs — Build Radiator</h1>
 <p class="meta">Version on default branch + latest <strong>tests</strong> per repo. For monorepos, we show per-project test jobs/workflows when available. Auto-refreshes every 2 minutes.</p>
@@ -283,9 +286,24 @@ def render(items):
     <div>Version: <strong>{{ it.version }}</strong> <span class="meta">(from {{ it.version_source }})</span></div>
     <div>Branch: <code>{{ it.default_branch }}</code></div>
     {% if it.subtests and it.subtests|length > 0 %}
-      <div class="meta" style="margin-top:6px;">Tests:</div>
+  <div class="meta" style="margin-top:6px;">Tests:</div>
+  <ul>
+    {% for s in it.subtests[:6] %}
+      {% set sc = "unk" %}
+      {% if s.conclusion == "success" %}{% set sc="ok" %}{% elif s.conclusion in ["failure","timed_out","cancelled","action_required"] %}{% set sc="fail" %}{% elif s.status in ["in_progress","queued"] %}{% set sc="run" %}{% endif %}
+      <li>
+        <span class="dot {{ sc }}"></span>
+        {% if s.html_url %}<a href="{{ s.html_url }}" class="label">{{ s.label }}</a>{% else %}<span class="label">{{ s.label }}</span>{% endif %}
+        <span class="meta">({{ s.source }})</span>
+      </li>
+    {% endfor %}
+  </ul>
+
+  {% if it.subtests|length > 6 %}
+    <details class="more">
+      <summary class="meta">…and {{ it.subtests|length - 6 }} more</summary>
       <ul>
-        {% for s in it.subtests[:6] %}
+        {% for s in it.subtests[6:] %}
           {% set sc = "unk" %}
           {% if s.conclusion == "success" %}{% set sc="ok" %}{% elif s.conclusion in ["failure","timed_out","cancelled","action_required"] %}{% set sc="fail" %}{% elif s.status in ["in_progress","queued"] %}{% set sc="run" %}{% endif %}
           <li>
@@ -294,13 +312,12 @@ def render(items):
             <span class="meta">({{ s.source }})</span>
           </li>
         {% endfor %}
-        {% if it.subtests|length > 6 %}
-          <li class="meta">…and {{ it.subtests|length - 6 }} more</li>
-        {% endif %}
       </ul>
-    {% else %}
-      <div class="meta">Tests: no recent test signals on {{ it.default_branch }}</div>
-    {% endif %}
+    </details>
+  {% endif %}
+{% else %}
+  <div class="meta">Tests: no recent test signals on {{ it.default_branch }}</div>
+{% endif %}
   </div>
 {% endfor %}
 </div>
