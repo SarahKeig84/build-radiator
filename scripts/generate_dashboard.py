@@ -108,21 +108,15 @@ def get_head_sha(owner, repo, ref):
     data = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}")
     return data.get("sha")
 
-def severity(status, conclusion):
-    """
-    Lower is better:
-      0 success
-      1 in_progress/queued
-      2 neutral/unknown
-      3 failure/timed_out/cancelled/action_required
-    """
-    if conclusion == "success":
+def priority(status, conclusion):
+    # Lower number = higher priority (worse)
+    if conclusion in ("failure","timed_out","cancelled","action_required"):
         return 0
     if status in ("in_progress","queued"):
         return 1
-    if conclusion in ("failure","timed_out","cancelled","action_required"):
+    if conclusion == "success":
         return 3
-    return 2
+    return 2  # neutral/unknown
 
 def latest_test_signals(owner, repo, ref, max_items=12):
     """
