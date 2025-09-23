@@ -16,6 +16,7 @@ def gh(url, params=None):
 
 def list_repos(org):
     repos, page = [], 1
+    # 1) Try the org endpoint (works great with classic PATs)
     while True:
         data = gh(f"https://api.github.com/orgs/{org}/repos",
                   params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"})
@@ -23,7 +24,23 @@ def list_repos(org):
             break
         repos.extend(data)
         page += 1
+
+    # 2) Also query user-owned repos and include ones owned by the org (helps with fine-grained PATs)
+    names = {r["name"] for r in repos}
+    page = 1
+    while True:
+        data = gh("https://api.github.com/user/repos",
+                  params={"per_page": 100, "page": page, "affiliation": "organization_member"})
+        if not data:
+            break
+        for r in data:
+            if r.get("owner", {}).get("login", "").lower() == org.lower() and r["name"] not in names:
+                repos.append(r)
+                names.add(r["name"])
+        page += 1
+
     return repos
+
 
 def read_file_version(owner, repo, path, ref):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
