@@ -173,8 +173,8 @@ def priority(status, conclusion):
         return 3
     return 2  # neutral/unknown
 
-def get_recent_runs(owner, repo, pages=3):
-    """Fetch up to 300 recent workflow runs (3 pages × 100)."""
+def get_recent_runs(owner, repo, pages=5):
+    """Fetch up to 500 recent workflow runs (pages × 100)."""
     all_runs = []
     for page in range(1, pages + 1):
         resp = gh(
@@ -191,15 +191,15 @@ def latest_test_signals(owner, repo, ref, max_items=12):
     """
     Collect test signals across MANY recent runs:
       - push/schedule on the default branch
-      - workflow_dispatch (manual) on default branch (or when branch is unspecified)
-      - pull_request runs whose base == default branch
+      - workflow_dispatch on default branch (or when branch is unspecified)
+      - pull_request runs whose base == default branch, OR (fallback) when PR details are hidden
     Also include check runs on HEAD.
     """
     signals = []
 
     # 1) Recent workflow runs (paginate so monorepo PR tests aren't missed)
     try:
-        runs = get_recent_runs(owner, repo, pages=3)  # bump to 5 if needed
+        runs = get_recent_runs(owner, repo, pages=5)
         for run in runs:
             event = (run.get("event") or "").lower()
             head_branch = run.get("head_branch")
@@ -212,14 +212,15 @@ def latest_test_signals(owner, repo, ref, max_items=12):
             if event in ("push", "schedule"):
                 targets_default = (head_branch == ref)
             elif event == "workflow_dispatch":
-                # manual runs sometimes omit head_branch; accept if missing
+                # manual runs sometimes omit head_branch
                 targets_default = (head_branch == ref) or (head_branch is None)
             elif event == "pull_request":
-                for pr in run.get("pull_requests", []):
-                    base = (pr.get("base") or {})
-                    if base.get("ref") == ref:
-                        targets_default = True
-                        break
+                prs = run.get("pull_requests", [])
+                if prs:
+                    targets_default = any(((pr.get("base") or {}).get("ref") == ref) for pr in prs)
+                else:
+                    # Fallback: some tokens/org settings hide PR details → include PR runs
+                    targets_default = True
 
             if not targets_default:
                 continue
@@ -290,7 +291,7 @@ def latest_test_signals(owner, repo, ref, max_items=12):
     except Exception:
         pass
 
-    # 3) Deduplicate by label, keep the most recent
+    # Dedup by label (keep newest)
     dedup = {}
     for s in signals:
         key = s["label"].strip().lower()
