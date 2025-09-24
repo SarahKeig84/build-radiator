@@ -34,29 +34,60 @@ def gh(url, params=None):
     return r.json()
 
 def list_repos(org):
-    """Return all repos visible to the token, including private org repos."""
-    repos, page = [], 1
-    # Org endpoint
+    """Return all repos visible to the token. Be resilient to 403/404 on org endpoint."""
+    repos = []
+
+    # 1) Try org endpoint; if we hit 403/404, skip to fallback
+    page = 1
     while True:
-        data = gh(f"https://api.github.com/orgs/{org}/repos",
-                  params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"})
+        try:
+            data = gh(
+                f"https://api.github.com/orgs/{org}/repos",
+                params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"},
+            )
+        except requests.exceptions.HTTPError as e:
+            sc = getattr(e.response, "status_code", None)
+            if sc in (403, 404):
+                # No org-wide list permission → rely on user endpoint below
+                data = []
+                break
+            raise
         if not data:
             break
         repos.extend(data)
         page += 1
-    # User endpoint (helps with fine-grained PATs)
-    names = {r["name"] for r in repos}
+
+    # 2) Fallback: use user repos and filter to this org
+    names = {r.get("full_name") or f"{org}/{r['name']}" for r in repos}
     page = 1
     while True:
-        data = gh("https://api.github.com/user/repos",
-                  params={"per_page": 100, "page": page, "affiliation": "organization_member"})
+        try:
+            data = gh(
+                "https://api.github.com/user/repos",
+                params={
+                    "per_page": 100,
+                    "page": page,
+                    # include repos via org membership or direct collaboration
+                    "affiliation": "organization_member,collaborator",
+                },
+            )
+        except requests.exceptions.HTTPError as e:
+            sc = getattr(e.response, "status_code", None)
+            if sc in (403, 404):
+                break
+            raise
+
         if not data:
             break
+
         for r in data:
-            if r.get("owner", {}).get("login", "").lower() == org.lower() and r["name"] not in names:
+            owner = (r.get("owner") or {}).get("login", "")
+            full = r.get("full_name") or f"{owner}/{r['name']}"
+            if owner.lower() == org.lower() and full not in names:
                 repos.append(r)
-                names.add(r["name"])
+                names.add(full)
         page += 1
+
     return repos
 
 def read_file_version(owner, repo, path, ref):
