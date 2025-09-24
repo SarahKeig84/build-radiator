@@ -9,9 +9,24 @@ ORG = os.environ.get("ORG","netboxlabs")
 TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
-# Heuristics: what looks like tests vs. non-test infra
-TEST_JOB_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite|cypress|jest)", re.I)
-NON_TEST_JOB_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql|upload|allure|qase|report|artifact|cache|setup|install|build)", re.I)
+# Heuristics for detecting test workflows and jobs
+TEST_WORKFLOW_RE = re.compile(
+    r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite)",
+    re.I,
+)
+NON_TEST_HINT = re.compile(
+    r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)",
+    re.I,
+)
+
+TEST_JOB_RE = re.compile(
+    r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite|cypress|jest)",
+    re.I,
+)
+NON_TEST_JOB_HINT = re.compile(
+    r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql|upload|allure|qase|report|artifact|cache|setup|install|build)",
+    re.I,
+)
 
 def gh(url, params=None):
     r = requests.get(url, headers=HEADERS, params=params)
@@ -118,24 +133,33 @@ def priority(status, conclusion):
         return 3
     return 2  # neutral/unknown
 
+def get_recent_runs(owner, repo, pages=3):
+    """Fetch up to 300 recent workflow runs (3 pages × 100)."""
+    all_runs = []
+    for page in range(1, pages + 1):
+        resp = gh(
+            f"https://api.github.com/repos/{owner}/{repo}/actions/runs",
+            params={"per_page": 100, "page": page}
+        )
+        runs = resp.get("workflow_runs", [])
+        if not runs:
+            break
+        all_runs.extend(runs)
+    return all_runs
+
 def latest_test_signals(owner, repo, ref, max_items=12):
     """
-    Collect test signals by scanning recent runs across ALL workflows and
-    keeping those that are:
-      - push/schedule/dispatch runs on the default branch, OR
-      - pull_request runs whose base branch == default branch.
+    Collect test signals across MANY recent runs:
+      - push/schedule on the default branch
+      - workflow_dispatch (manual) on default branch (or when branch is unspecified)
+      - pull_request runs whose base == default branch
     Also include check runs on HEAD.
-    Returns (signals, overall)
     """
     signals = []
 
-    # 1) Recent workflow runs (no branch filter so PR runs are included)
+    # 1) Recent workflow runs (paginate so monorepo PR tests aren't missed)
     try:
-        runs = gh(
-            f"https://api.github.com/repos/{owner}/{repo}/actions/runs",
-            params={"per_page": 50}
-        ).get("workflow_runs", [])
-
+        runs = get_recent_runs(owner, repo, pages=3)  # bump to 5 if needed
         for run in runs:
             event = (run.get("event") or "").lower()
             head_branch = run.get("head_branch")
@@ -145,8 +169,11 @@ def latest_test_signals(owner, repo, ref, max_items=12):
 
             # Keep runs that affect the default branch
             targets_default = False
-            if event in ("push", "schedule", "workflow_dispatch"):
+            if event in ("push", "schedule"):
                 targets_default = (head_branch == ref)
+            elif event == "workflow_dispatch":
+                # manual runs sometimes omit head_branch; accept if missing
+                targets_default = (head_branch == ref) or (head_branch is None)
             elif event == "pull_request":
                 for pr in run.get("pull_requests", []):
                     base = (pr.get("base") or {})
@@ -179,7 +206,6 @@ def latest_test_signals(owner, repo, ref, max_items=12):
                 if (run_is_test and not NON_TEST_JOB_HINT.search(jname)) or \
                    (TEST_JOB_RE.search(jname) and not NON_TEST_JOB_HINT.search(jname)):
                     signals.append({
-                        # Include workflow name for monorepos so it's clear which project this job belongs to
                         "label": f"{wf_name} / {jname}" if wf_name else jname,
                         "status": job.get("status"),
                         "conclusion": job.get("conclusion"),
@@ -232,17 +258,16 @@ def latest_test_signals(owner, repo, ref, max_items=12):
             dedup[key] = s
     signals = list(dedup.values())
 
-    # Sort by priority (fail first) and, within the same priority, newest first
+    # Failures first, then newest
     signals.sort(key=lambda s: s.get("updated_at") or "", reverse=True)
     signals.sort(key=lambda s: priority(s.get("status"), s.get("conclusion")))
     signals = signals[:max_items]
 
-    # Overall = worst (lowest priority value)
-    if signals:
-        overall = min(signals, key=lambda s: priority(s.get("status"), s.get("conclusion")))
-    else:
-        overall = {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
-
+    overall = (
+        min(signals, key=lambda s: priority(s.get("status"), s.get("conclusion")))
+        if signals else
+        {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
+    )
     return signals, overall
 
 def build_cards():
