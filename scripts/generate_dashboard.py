@@ -34,60 +34,78 @@ def gh(url, params=None):
     return r.json()
 
 def list_repos(org):
-    """Return all repos visible to the token. Be resilient to 403/404 on org endpoint."""
-    repos = []
+    """Return all repos visible to the token. Tries multiple endpoints and logs what happens."""
+    repos, seen = [], set()
 
-    # 1) Try org endpoint; if we hit 403/404, skip to fallback
-    page = 1
-    while True:
+    def add_many(rs):
+        for r in rs or []:
+            owner = (r.get("owner") or {}).get("login", "")
+            name = r.get("name")
+            full = r.get("full_name") or (f"{owner}/{name}" if owner and name else None)
+            if owner.lower() == org.lower() and full and full not in seen:
+                seen.add(full)
+                repos.append(r)
+
+    # 1) Org endpoint (best when allowed)
+    for page in range(1, 6):
         try:
             data = gh(
                 f"https://api.github.com/orgs/{org}/repos",
                 params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"},
             )
+            if not data:
+                break
+            add_many(data)
         except requests.exceptions.HTTPError as e:
             sc = getattr(e.response, "status_code", None)
+            print(f"[list_repos] org repos page {page} -> HTTP {sc}; falling back")
             if sc in (403, 404):
-                # No org-wide list permission → rely on user endpoint below
-                data = []
-                break
-            raise
-        if not data:
-            break
-        repos.extend(data)
-        page += 1
+                break  # skip to user/search fallbacks
+            else:
+                raise
 
-    # 2) Fallback: use user repos and filter to this org
-    names = {r.get("full_name") or f"{org}/{r['name']}" for r in repos}
-    page = 1
-    while True:
+    # 2) User endpoint (works for many classic PATs)
+    for page in range(1, 6):
         try:
             data = gh(
                 "https://api.github.com/user/repos",
                 params={
                     "per_page": 100,
                     "page": page,
-                    # include repos via org membership or direct collaboration
-                    "affiliation": "organization_member,collaborator",
+                    "affiliation": "owner,organization_member,collaborator",
                 },
             )
+            if not data:
+                break
+            add_many(data)
         except requests.exceptions.HTTPError as e:
             sc = getattr(e.response, "status_code", None)
+            print(f"[list_repos] user repos page {page} -> HTTP {sc}")
             if sc in (403, 404):
                 break
-            raise
+            else:
+                raise
 
-        if not data:
-            break
+    # 3) Search fallback (returns both public and private you can access)
+    for page in range(1, 6):
+        try:
+            data = gh(
+                "https://api.github.com/search/repositories",
+                params={"q": f"org:{org}", "per_page": 100, "page": page},
+            )
+            items = data.get("items", [])
+            if not items:
+                break
+            add_many(items)
+        except requests.exceptions.HTTPError as e:
+            sc = getattr(e.response, "status_code", None)
+            print(f"[list_repos] search repos page {page} -> HTTP {sc}")
+            if sc in (403, 404):
+                break
+            else:
+                raise
 
-        for r in data:
-            owner = (r.get("owner") or {}).get("login", "")
-            full = r.get("full_name") or f"{owner}/{r['name']}"
-            if owner.lower() == org.lower() and full not in names:
-                repos.append(r)
-                names.add(full)
-        page += 1
-
+    print(f"[list_repos] collected {len(repos)} repos for org '{org}'")
     return repos
 
 def read_file_version(owner, repo, path, ref):
