@@ -11,22 +11,26 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github
 
 # Heuristics for detecting test workflows and jobs
 TEST_WORKFLOW_RE = re.compile(
-    r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite)",
+    r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite|ci)",
     re.I,
 )
+
 NON_TEST_HINT = re.compile(
     r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)",
     re.I,
 )
 
 TEST_JOB_RE = re.compile(
-    r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite|cypress|jest)",
+    r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite|cypress|jest|\bci\b)",
     re.I,
 )
+
+# NOTE: intentionally **no 'build'** here anymore (many repos run tests in a 'build' job)
 NON_TEST_JOB_HINT = re.compile(
-    r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql|upload|allure|qase|report|artifact|cache|setup|install|build)",
+    r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql|upload|allure|qase|report|artifact|cache|setup|install)",
     re.I,
 )
+
 
 def gh(url, params=None):
     r = requests.get(url, headers=HEADERS, params=params)
