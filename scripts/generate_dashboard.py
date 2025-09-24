@@ -116,8 +116,17 @@ def detect_version(owner, repo, ref):
     return None, None
 
 def default_branch(owner, repo):
-    r = gh(f"https://api.github.com/repos/{owner}/{repo}")
-    return r.get("default_branch","main")
+    try:
+        r = gh(f"https://api.github.com/repos/{owner}/{repo}")
+        return r.get("default_branch", "main")
+    except requests.exceptions.HTTPError as e:
+        # No access (403) or not found (404) → treat as restricted
+        sc = getattr(e.response, "status_code", None)
+        if sc in (403, 404):
+            return None
+        raise
+    except Exception:
+        return None
 
 def get_head_sha(owner, repo, ref):
     data = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}")
@@ -276,7 +285,23 @@ def build_cards():
         repo = r["name"]
         if r.get("archived"):
             continue
+
         ref = default_branch(ORG, repo)
+        if not ref:
+            # No permission to read this repo; add a placeholder card and continue
+            items.append({
+                "repo": repo,
+                "default_branch": "—",
+                "version": "—",
+                "version_source": "n/a",
+                "overall": {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Restricted", "source": "perm"},
+                "subtests": [],
+                "has_tests": False,
+                "restricted": True,
+                "html_url": r.get("html_url"),
+            })
+            continue
+
         ver, vsrc = detect_version(ORG, repo, ref)
         subtests, overall = latest_test_signals(ORG, repo, ref, max_items=12)
         items.append({
@@ -287,19 +312,19 @@ def build_cards():
             "overall": overall,
             "subtests": subtests,
             "has_tests": bool(subtests),
-            "html_url": r["html_url"],
+            "restricted": False,
+            "html_url": r.get("html_url"),
         })
 
     # Order repo cards:
-    # 1) Repos WITH tests first, then those without
-    # 2) Within "has tests": failing → in_progress → success → unknown
-    # 3) Newer updates first
-    # 4) Finally A–Z by name (stable tie-breaker)
+    # 1) Repos WITH tests, then WITHOUT tests, then RESTRICTED (no access)
+    # 2) Within group: failing → in_progress → success → unknown
+    # 3) Newest first
+    # 4) Finally A–Z for stability
     items.sort(key=lambda it: it["repo"].lower())
     items.sort(key=lambda it: it["overall"].get("updated_at") or "", reverse=True)
     items.sort(key=lambda it: priority(it["overall"].get("status"), it["overall"].get("conclusion")))
-    items.sort(key=lambda it: 0 if it["has_tests"] else 1)
-
+    items.sort(key=lambda it: 2 if it.get("restricted") else (0 if it.get("has_tests") else 1))
     return items
 
 def render(items):
