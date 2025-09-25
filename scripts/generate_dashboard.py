@@ -162,6 +162,39 @@ def detect_version(owner, repo, ref):
         pass
     return None, None
 
+def build_cards():
+    """Build cards for all repos with their test statuses and versions."""
+    items = []
+    for r in list_repos(ORG):
+        repo = r["name"]
+        if r.get("archived"):
+            continue
+        ref = default_branch(ORG, repo)
+        ver, vsrc = detect_version(ORG, repo, ref)
+        subtests, overall = latest_test_signals(ORG, repo, ref, max_items=12)
+        items.append({
+            "repo": repo,
+            "default_branch": ref,
+            "version": ver or "—",
+            "version_source": vsrc or "n/a",
+            "overall": overall,
+            "subtests": subtests,
+            "has_tests": bool(subtests),
+            "html_url": r["html_url"],
+        })
+
+    # Order repo cards:
+    # 1) Repos WITH tests first, then those without
+    # 2) Within "has tests": failing → in_progress → success → unknown
+    # 3) Newer updates first
+    # 4) Finally A–Z by name (stable tie-breaker)
+    items.sort(key=lambda it: it["repo"].lower())
+    items.sort(key=lambda it: it["overall"].get("updated_at") or "", reverse=True)
+    items.sort(key=lambda it: priority(it["overall"].get("status"), it["overall"].get("conclusion")))
+    items.sort(key=lambda it: 0 if it["has_tests"] else 1)
+
+    return items
+
 def render_dashboard():
     """Generate the HTML dashboard."""
     # Get both platform-monorepo specific tests and all repo cards
