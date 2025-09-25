@@ -162,6 +162,11 @@ def detect_version(owner, repo, ref):
         pass
     return None, None
 
+def default_branch(owner, repo):
+    """Get the default branch of a repo."""
+    r = gh(f"https://api.github.com/repos/{owner}/{repo}")
+    return r.get("default_branch","main")
+
 def build_cards():
     """Build cards for all repos with their test statuses and versions."""
     items = []
@@ -395,10 +400,6 @@ def render_dashboard():
 
 if __name__ == "__main__":
     render_dashboard()
-
-def default_branch(owner, repo):
-    r = gh(f"https://api.github.com/repos/{owner}/{repo}")
-    return r.get("default_branch","main")
 
 def get_head_sha(owner, repo, ref):
     data = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}")
