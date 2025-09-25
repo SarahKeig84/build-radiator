@@ -9,11 +9,9 @@ ORG = os.environ.get("ORG","netboxlabs")
 TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
 
-# Heuristics for detecting test workflows and jobs
-TEST_JOB_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|acceptance|regress|smoke|playwright|behave|bdd|qa|automation|testsuite|test-suite|cypress|jest)", re.I)
-NON_TEST_JOB_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql|upload|allure|qase|report|artifact|cache|setup|install|build)", re.I)
-TEST_WORKFLOW_RE = re.compile(r"(test|tests|ci|ci-cd|ci/cd|continuous|integration|e2e|acceptance|regress|smoke|qa|automation|testsuite|test-suite)", re.I)
-NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql|upload|artifact|cache|setup|install|build)", re.I)
+# Heuristics: what looks like tests vs. non-test infra
+TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|ci)", re.I)
+NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)", re.I)
 
 def gh(url, params=None):
     r = requests.get(url, headers=HEADERS, params=params)
@@ -21,65 +19,29 @@ def gh(url, params=None):
     return r.json()
 
 def list_repos(org):
-    """Return all repos visible to the token without using the search API.
-    Tries the org endpoint; if forbidden, falls back to user repos and filters by owner."""
-    repos = []
-
-    # 1) Try org endpoint; if 403/404, skip to fallback
-    page = 1
+    """Return all repos visible to the token, including private org repos."""
+    repos, page = [], 1
+    # Org endpoint
     while True:
-        try:
-            data = gh(
-                f"https://api.github.com/orgs/{org}/repos",
-                params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"},
-            )
-        except requests.exceptions.HTTPError as e:
-            sc = getattr(e.response, "status_code", None)
-            if sc in (403, 404):
-                print(f"[list_repos] org endpoint {sc}; falling back to /user/repos")
-                data = []
-                break
-            raise
+        data = gh(f"https://api.github.com/orgs/{org}/repos",
+                  params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"})
         if not data:
             break
         repos.extend(data)
-        print(f"[list_repos] org page {page}: got {len(data)}")
         page += 1
-
-    # 2) Fallback: /user/repos and filter to this org
-    names = {r.get("full_name") or f"{org}/{r['name']}" for r in repos}
+    # User endpoint (helps with fine-grained PATs)
+    names = {r["name"] for r in repos}
     page = 1
     while True:
-        try:
-            data = gh(
-                "https://api.github.com/user/repos",
-                params={
-                    "per_page": 100,
-                    "page": page,
-                    "affiliation": "organization_member,collaborator",
-                },
-            )
-        except requests.exceptions.HTTPError as e:
-            sc = getattr(e.response, "status_code", None)
-            if sc in (403, 404):
-                break
-            raise
-
+        data = gh("https://api.github.com/user/repos",
+                  params={"per_page": 100, "page": page, "affiliation": "organization_member"})
         if not data:
             break
-
-        added = 0
         for r in data:
-            owner = (r.get("owner") or {}).get("login", "")
-            full = r.get("full_name") or f"{owner}/{r['name']}"
-            if owner.lower() == org.lower() and full not in names:
+            if r.get("owner", {}).get("login", "").lower() == org.lower() and r["name"] not in names:
                 repos.append(r)
-                names.add(full)
-                added += 1
-        print(f"[list_repos] user page {page}: added {added} from {org}")
+                names.add(r["name"])
         page += 1
-
-    print(f"[list_repos] total repos: {len(repos)}")
     return repos
 
 def read_file_version(owner, repo, path, ref):
@@ -139,17 +101,8 @@ def detect_version(owner, repo, ref):
     return None, None
 
 def default_branch(owner, repo):
-    try:
-        r = gh(f"https://api.github.com/repos/{owner}/{repo}")
-        return r.get("default_branch", "main")
-    except requests.exceptions.HTTPError as e:
-        # No access (403) or not found (404) → treat as restricted
-        sc = getattr(e.response, "status_code", None)
-        if sc in (403, 404):
-            return None
-        raise
-    except Exception:
-        return None
+    r = gh(f"https://api.github.com/repos/{owner}/{repo}")
+    return r.get("default_branch","main")
 
 def get_head_sha(owner, repo, ref):
     data = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}")
@@ -165,45 +118,35 @@ def priority(status, conclusion):
         return 3
     return 2  # neutral/unknown
 
-def get_recent_runs(owner, repo, pages=5):
-    """Fetch up to 500 recent workflow runs (pages × 100)."""
-    all_runs = []
-    for page in range(1, pages + 1):
-        resp = gh(
-            f"https://api.github.com/repos/{owner}/{repo}/actions/runs",
-            params={"per_page": 100, "page": page}
-        )
-        runs = resp.get("workflow_runs", [])
-        if not runs:
-            break
-        all_runs.extend(runs)
-    return all_runs
-
 def latest_test_signals(owner, repo, ref, max_items=12):
     """
-    Collect multiple test signals by scanning recent runs across ALL workflows on the branch
-    (so reusable workflows are included via their caller runs), plus check runs on HEAD.
+    Collect multiple test signals:
+      - Latest run per 'test-like' workflow on the given branch; include job-level results if present.
+      - Check runs on HEAD commit that look like tests.
     Returns (signals:list, overall:dict)
     each signal: {label, status, conclusion, html_url, updated_at, source}
     """
     signals = []
 
-    # 1) Recent workflow runs on the default branch (grab jobs from each)
+    # 1) Workflows that look like tests
     try:
-        runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/runs",
-                  params={"branch": ref, "per_page": 20}).get("workflow_runs", [])
-        for run in runs:
-            wf_name = (run.get("name") or "")
-            wf_path = (run.get("path") or "")
+        wfs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows").get("workflows", [])
+        for wf in wfs:
+            name = (wf.get("name") or "")
+            path = (wf.get("path") or "")
+            if not (TEST_WORKFLOW_RE.search(name) or TEST_WORKFLOW_RE.search(path)):
+                continue
+            if NON_TEST_HINT.search(name) or NON_TEST_HINT.search(path):
+                continue
+
+            runs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wf['id']}/runs",
+                      params={"branch": ref, "per_page": 1}).get("workflow_runs", [])
+            if not runs:
+                continue
+            run = runs[0]
             run_id = run.get("id")
 
-            # Is the *workflow* itself test-like?
-            run_is_test = (
-                (TEST_WORKFLOW_RE.search(wf_name) or TEST_WORKFLOW_RE.search(wf_path))
-                and not (NON_TEST_HINT.search(wf_name) or NON_TEST_HINT.search(wf_path))
-            )
-
-            # Pull all jobs for this run
+            # Try to get job-level signals (matrix jobs => per-project)
             try:
                 jobs = gh(f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
                           params={"per_page": 100}).get("jobs", [])
@@ -213,9 +156,7 @@ def latest_test_signals(owner, repo, ref, max_items=12):
             added_job = False
             for job in jobs:
                 jname = job.get("name","")
-                # Keep jobs that look like tests OR all jobs from a test-like workflow
-                if (run_is_test and not NON_TEST_JOB_HINT.search(jname)) or \
-                   (TEST_JOB_RE.search(jname) and not NON_TEST_JOB_HINT.search(jname)):
+                if TEST_WORKFLOW_RE.search(jname) and not NON_TEST_HINT.search(jname):
                     signals.append({
                         "label": jname,
                         "status": job.get("status"),
@@ -225,11 +166,10 @@ def latest_test_signals(owner, repo, ref, max_items=12):
                         "source": "workflow:job",
                     })
                     added_job = True
-
-            # If workflow is test-like but no jobs matched, keep the workflow-level signal
-            if run_is_test and not added_job:
+            # If no job matched, fall back to workflow-level run
+            if not added_job:
                 signals.append({
-                    "label": wf_name or "Tests",
+                    "label": name or "Tests",
                     "status": run.get("status"),
                     "conclusion": run.get("conclusion"),
                     "html_url": run.get("html_url"),
@@ -239,7 +179,7 @@ def latest_test_signals(owner, repo, ref, max_items=12):
     except Exception:
         pass
 
-    # 2) Check runs on HEAD (granular signals from external tools)
+    # 2) Check runs on HEAD (often granular, includes third-party CI)
     try:
         sha = get_head_sha(owner, repo, ref)
         if sha:
@@ -247,7 +187,7 @@ def latest_test_signals(owner, repo, ref, max_items=12):
                         params={"per_page": 100}).get("check_runs", [])
             for cr in checks:
                 name = cr.get("name","")
-                if TEST_JOB_RE.search(name) and not NON_TEST_JOB_HINT.search(name):
+                if TEST_WORKFLOW_RE.search(name) and not NON_TEST_HINT.search(name):
                     signals.append({
                         "label": name,
                         "status": cr.get("status"),
@@ -269,12 +209,12 @@ def latest_test_signals(owner, repo, ref, max_items=12):
 
     # Sort by priority (fail first) and, within the same priority, newest first
     signals.sort(key=lambda s: s.get("updated_at") or "", reverse=True)  # newest first
-    signals.sort(key=lambda s: priority(s.get("status"), s.get("conclusion")))  # failures first
+    signals.sort(key=lambda s: priority(s.get("status"), s.get("conclusion")))  # stable sort puts failures first
     signals = signals[:max_items]
 
-    # Overall = worst (lowest priority value)
+    # Overall = worst (lowest priority value); tie-break by recency
     if signals:
-        overall = min(signals, key=lambda s: priority(s.get("status"), s.get("conclusion")))
+        overall = min(signals, key=lambda s: (priority(s.get("status"), s.get("conclusion")), -(s.get("updated_at") is not None)))
     else:
         overall = {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Tests", "source": "none"}
 
@@ -286,23 +226,7 @@ def build_cards():
         repo = r["name"]
         if r.get("archived"):
             continue
-
         ref = default_branch(ORG, repo)
-        if not ref:
-            # No permission to read this repo; add a placeholder card and continue
-            items.append({
-                "repo": repo,
-                "default_branch": "—",
-                "version": "—",
-                "version_source": "n/a",
-                "overall": {"status": "unknown", "conclusion": None, "html_url": None, "updated_at": None, "label": "Restricted", "source": "perm"},
-                "subtests": [],
-                "has_tests": False,
-                "restricted": True,
-                "html_url": r.get("html_url"),
-            })
-            continue
-
         ver, vsrc = detect_version(ORG, repo, ref)
         subtests, overall = latest_test_signals(ORG, repo, ref, max_items=12)
         items.append({
@@ -310,23 +234,12 @@ def build_cards():
             "default_branch": ref,
             "version": ver or "—",
             "version_source": vsrc or "n/a",
-            "overall": overall,
-            "subtests": subtests,
-            "has_tests": bool(subtests),
-            "restricted": False,
-            "html_url": r.get("html_url"),
+            "overall": overall,     # overall per repo
+            "subtests": subtests,   # list of per-project signals
+            "html_url": r["html_url"],
         })
+    return sorted(items, key=lambda x: x["repo"].lower())
 
-    # Order repo cards:
-    # 1) Repos WITH tests, then WITHOUT tests, then RESTRICTED (no access)
-    # 2) Within group: failing → in_progress → success → unknown
-    # 3) Newest first
-    # 4) Finally A–Z for stability
-    items.sort(key=lambda it: it["repo"].lower())
-    items.sort(key=lambda it: it["overall"].get("updated_at") or "", reverse=True)
-    items.sort(key=lambda it: priority(it["overall"].get("status"), it["overall"].get("conclusion")))
-    items.sort(key=lambda it: 2 if it.get("restricted") else (0 if it.get("has_tests") else 1))
-    return items
 
 def render(items):
     Path("dist").mkdir(parents=True, exist_ok=True)
