@@ -5,10 +5,15 @@ import tomllib as tomli  # Python 3.11 'tomllib'
 import yaml
 from jinja2 import Template
 from datetime import datetime, timezone
+import packaging.version
+import time
 
 ORG = os.environ.get("ORG","netboxlabs")
 TOKEN = os.environ["GH_TOKEN"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
+
+# Cache for package version lookups to avoid hitting rate limits
+VERSION_CACHE = {}
 
 # Workflows to specifically monitor in the platform-monorepo
 MONITORED_WORKFLOWS = {
@@ -156,6 +161,147 @@ def read_file_version(owner, repo, path, ref):
         m = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", content)
         return m.group(1) if m else None
     return None
+
+def get_latest_pypi_version(package_name):
+    """Get the latest version of a package from PyPI."""
+    cache_key = f"pypi:{package_name}"
+    if cache_key in VERSION_CACHE:
+        return VERSION_CACHE[cache_key]
+    
+    try:
+        r = requests.get(f"https://pypi.org/pypi/{package_name}/json")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+        version = data["info"]["version"]
+        VERSION_CACHE[cache_key] = version
+        return version
+    except Exception as e:
+        print(f"Error fetching PyPI version for {package_name}: {e}")
+        return None
+
+def get_latest_npm_version(package_name):
+    """Get the latest version of a package from npm."""
+    cache_key = f"npm:{package_name}"
+    if cache_key in VERSION_CACHE:
+        return VERSION_CACHE[cache_key]
+    
+    try:
+        r = requests.get(f"https://registry.npmjs.org/{package_name}/latest")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+        version = data["version"]
+        VERSION_CACHE[cache_key] = version
+        return version
+    except Exception as e:
+        print(f"Error fetching npm version for {package_name}: {e}")
+        return None
+
+def compare_versions(current, latest):
+    """Compare two version strings, returns -1 if current is behind, 0 if equal, 1 if ahead."""
+    if not current or not latest:
+        return None
+    
+    try:
+        current_v = packaging.version.parse(current.lstrip("^~=v"))
+        latest_v = packaging.version.parse(latest.lstrip("^~=v"))
+        if current_v < latest_v:
+            return -1
+        elif current_v > latest_v:
+            return 1
+        return 0
+    except Exception:
+        return None
+
+def get_dependencies(owner, repo, ref):
+    """Get dependencies from package.json, pyproject.toml, or requirements.txt."""
+    dependencies = {
+        "python": [],
+        "node": []
+    }
+    
+    # Check package.json
+    try:
+        data = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/package.json", params={"ref": ref})
+        if data:
+            content = json.loads(base64.b64decode(data["content"]).decode("utf-8"))
+            deps = content.get("dependencies", {})
+            dev_deps = content.get("devDependencies", {})
+            
+            for name, version in {**deps, **dev_deps}.items():
+                # Clean up version string
+                version = version.lstrip("^~=")
+                latest = get_latest_npm_version(name)
+                status = compare_versions(version, latest)
+                dependencies["node"].append({
+                    "name": name,
+                    "current": version,
+                    "latest": latest,
+                    "status": status
+                })
+                # Rate limiting
+                time.sleep(0.1)
+    except Exception:
+        pass
+
+    # Check pyproject.toml
+    try:
+        data = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/pyproject.toml", params={"ref": ref})
+        if data:
+            content = tomli.loads(base64.b64decode(data["content"]).decode("utf-8"))
+            deps = content.get("project", {}).get("dependencies", [])
+            dev_deps = content.get("project", {}).get("optional-dependencies", {}).get("dev", [])
+            
+            for dep in [*deps, *dev_deps]:
+                # Parse requirement string (e.g., "requests>=2.25.1")
+                match = re.match(r"([^<>=~!]+)(?:[<>=~!]+([^,]+))?", dep)
+                if match:
+                    name = match.group(1).strip()
+                    version = match.group(2).strip() if match.group(2) else None
+                    latest = get_latest_pypi_version(name)
+                    status = compare_versions(version, latest)
+                    dependencies["python"].append({
+                        "name": name,
+                        "current": version,
+                        "latest": latest,
+                        "status": status
+                    })
+                    # Rate limiting
+                    time.sleep(0.1)
+    except Exception:
+        pass
+
+    # Check requirements.txt
+    try:
+        data = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/requirements.txt", params={"ref": ref})
+        if data:
+            content = base64.b64decode(data["content"]).decode("utf-8")
+            for line in content.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    match = re.match(r"([^<>=~!]+)(?:[<>=~!]+([^,]+))?", line)
+                    if match:
+                        name = match.group(1).strip()
+                        version = match.group(2).strip() if match.group(2) else None
+                        latest = get_latest_pypi_version(name)
+                        status = compare_versions(version, latest)
+                        # Don't add duplicates from pyproject.toml
+                        if not any(d["name"] == name for d in dependencies["python"]):
+                            dependencies["python"].append({
+                                "name": name,
+                                "current": version,
+                                "latest": latest,
+                                "status": status
+                            })
+                            # Rate limiting
+                            time.sleep(0.1)
+    except Exception:
+        pass
+
+    return dependencies
 
 def detect_version(owner, repo, ref):
     """Try to detect version from various files."""
@@ -315,6 +461,14 @@ def build_cards():
         ref = default_branch(ORG, repo)
         ver, vsrc = detect_version(ORG, repo, ref)
         subtests, overall = latest_test_signals(ORG, repo, ref, max_items=12)
+        dependencies = get_dependencies(ORG, repo, ref)
+        
+        # Count outdated dependencies
+        outdated = {
+            "python": len([d for d in dependencies["python"] if d["status"] == -1]),
+            "node": len([d for d in dependencies["node"] if d["status"] == -1])
+        }
+        
         items.append({
             "repo": repo,
             "default_branch": ref,
@@ -324,6 +478,8 @@ def build_cards():
             "subtests": subtests,
             "has_tests": bool(subtests),
             "html_url": r["html_url"],
+            "dependencies": dependencies,
+            "outdated_deps": outdated
         })
 
     # Order repo cards:
@@ -475,6 +631,42 @@ def render_dashboard():
             .status-failure { background-color: #ffe5e5; color: #3c0d0d; }
             .status-pending { background-color: #fff3dc; color: #3c2a0d; }
             .status-unknown { background-color: #f0f1f3; color: #1a202c; }
+            
+            .deps-section {
+                margin-top: 0.5rem;
+                font-size: 0.9em;
+            }
+            .deps-badge {
+                display: inline-block;
+                padding: 0.15em 0.4em;
+                font-size: 0.75rem;
+                font-weight: 500;
+                border-radius: 4px;
+                margin-right: 0.5rem;
+            }
+            .deps-ok { background-color: #dcffe4; color: #0a3622; }
+            .deps-outdated { background-color: #ffe5e5; color: #3c0d0d; }
+            .deps-header {
+                color: #6e7681;
+                font-size: 0.9em;
+                margin-top: 0.5rem;
+            }
+            .deps-list {
+                margin: 0.5rem 0;
+                font-family: monaco, monospace;
+                font-size: 0.85em;
+            }
+            .deps-item {
+                display: flex;
+                justify-content: space-between;
+                padding: 0.1rem 0;
+            }
+            .deps-outdated-text {
+                color: #e11d48;
+            }
+            .deps-current-text {
+                color: #059669;
+            }
             .version-tag {
                 display: inline-block;
                 padding: 0.25em 0.6em;
@@ -500,24 +692,32 @@ def render_dashboard():
             <div class="section">
                 <h2>🚀 Platform Monorepo Tests</h2>
                 <div class="grid">
+                    {% set all_tests = [] %}
                     {% for test in monorepo_tests.integration_tests %}
-                        <div class="workflow {{ test.status }}">
-                            <div class="test-header">
-                                <strong>Integration Test</strong>
-                            </div>
-                            <div class="test-name">
-                                <a href="{{ test.url }}">{{ test.name }}</a>
-                            </div>
-                            <div class="test-status">
-                                <span class="status-badge status-{{ test.status }}">{{ test.status }}</span>
-                            </div>
-                            <div class="timestamp">Last updated: {{ test.updated }}</div>
-                        </div>
+                        {% set _ = all_tests.append({
+                            'type': 'Integration Test',
+                            'name': test.name,
+                            'url': test.url,
+                            'status': test.status,
+                            'updated': test.updated,
+                            'priority': 0 if test.status == 'failure' else (1 if test.status in ['in_progress', 'pending'] else (2 if test.status == 'success' else 3))
+                        }) %}
                     {% endfor %}
                     {% for test in monorepo_tests.console_ui_tests %}
+                        {% set _ = all_tests.append({
+                            'type': 'Console UI Test',
+                            'name': test.name,
+                            'url': test.url,
+                            'status': test.status,
+                            'updated': test.updated,
+                            'priority': 0 if test.status == 'failure' else (1 if test.status in ['in_progress', 'pending'] else (2 if test.status == 'success' else 3))
+                        }) %}
+                    {% endfor %}
+                    {% set sorted_tests = all_tests|sort(attribute='priority') %}
+                    {% for test in sorted_tests %}
                         <div class="workflow {{ test.status }}">
                             <div class="test-header">
-                                <strong>Console UI Test</strong>
+                                <strong>{{ test.type }}</strong>
                             </div>
                             <div class="test-name">
                                 <a href="{{ test.url }}">{{ test.name }}</a>
@@ -569,6 +769,54 @@ def render_dashboard():
                                         {% endif %}
                                     </div>
                                 {% endfor %}
+                            </div>
+                        {% endif %}
+                        
+                        {% if card.dependencies.python or card.dependencies.node %}
+                            <div class="deps-section">
+                                {% if card.dependencies.python %}
+                                    <div class="deps-header">Python Dependencies</div>
+                                    {% if card.outdated_deps.python > 0 %}
+                                        <span class="deps-badge deps-outdated">{{ card.outdated_deps.python }} outdated</span>
+                                    {% else %}
+                                        <span class="deps-badge deps-ok">Up to date</span>
+                                    {% endif %}
+                                    <div class="deps-list">
+                                        {% for dep in card.dependencies.python %}
+                                            {% if dep.status == -1 %}
+                                            <div class="deps-item">
+                                                <span>{{ dep.name }}</span>
+                                                <span>
+                                                    <span class="deps-outdated-text">{{ dep.current }}</span> →
+                                                    <span class="deps-current-text">{{ dep.latest }}</span>
+                                                </span>
+                                            </div>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
+                                
+                                {% if card.dependencies.node %}
+                                    <div class="deps-header">Node Dependencies</div>
+                                    {% if card.outdated_deps.node > 0 %}
+                                        <span class="deps-badge deps-outdated">{{ card.outdated_deps.node }} outdated</span>
+                                    {% else %}
+                                        <span class="deps-badge deps-ok">Up to date</span>
+                                    {% endif %}
+                                    <div class="deps-list">
+                                        {% for dep in card.dependencies.node %}
+                                            {% if dep.status == -1 %}
+                                            <div class="deps-item">
+                                                <span>{{ dep.name }}</span>
+                                                <span>
+                                                    <span class="deps-outdated-text">{{ dep.current }}</span> →
+                                                    <span class="deps-current-text">{{ dep.latest }}</span>
+                                                </span>
+                                            </div>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
                             </div>
                         {% endif %}
                     </div>
