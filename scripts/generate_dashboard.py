@@ -53,10 +53,11 @@ def gh(url, params=None):
         r.raise_for_status()
         return r.json()
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 403:
-            # For restricted repos, log warning and return None
+        if e.response.status_code in (403, 404, 409):
+            # For restricted, not found, or conflict repos, log warning and return None
             repo_name = url.split("/repos/")[-1].split("/")[1] if "/repos/" in url else "unknown"
-            print(f"Warning: Access denied to repo {repo_name} (403 Forbidden)")
+            status_map = {403: "Access denied", 404: "Not found", 409: "Conflict"}
+            print(f"Warning: {status_map[e.response.status_code]} for repo {repo_name} ({e.response.status_code})")
             return None
         raise
 
@@ -78,7 +79,7 @@ def priority(status, conclusion):
 def default_branch(owner, repo):
     """Get the default branch of a repo."""
     r = gh(f"https://api.github.com/repos/{owner}/{repo}")
-    return r.get("default_branch","main") if r else "main"
+    return r.get("default_branch","main") if r else None
 
 def get_workflow_runs(owner, repo, workflow_id):
     """Get the latest run for a specific workflow."""
@@ -314,7 +315,8 @@ def get_dependencies(owner, repo, ref):
     repo_deps = get_repo_dependencies(owner, repo, ref)
     for dep_repo in repo_deps:
         # Get the status of the dependent repo
-            dep_branch = default_branch(owner, dep_repo)
+        dep_branch = default_branch(owner, dep_repo)
+        if dep_branch:  # Only process if we can access the repo
             dep_sha = get_head_sha(owner, dep_repo, dep_branch)
             if dep_sha:
                 dependencies["repos"].append({
@@ -322,9 +324,7 @@ def get_dependencies(owner, repo, ref):
                     "branch": dep_branch,
                     "sha": dep_sha[:7],
                     "url": f"https://github.com/{owner}/{dep_repo}"
-                })
-    
-    # Check package.json
+                })    # Check package.json
     try:
         data = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/package.json", params={"ref": ref})
         if data:
