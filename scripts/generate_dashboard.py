@@ -536,8 +536,8 @@ def render_dashboard():
     dist_dir = Path("dist")
     dist_dir.mkdir(parents=True, exist_ok=True)
     
-    # Write dashboard.html to the dist directory
-    output_path = dist_dir / "dashboard.html"
+    # Write index.html to the dist directory for GitHub Pages compatibility
+    output_path = dist_dir / "index.html"
     output_path.write_text(html)
     print(f"Dashboard generated at {output_path.absolute()}")
 
