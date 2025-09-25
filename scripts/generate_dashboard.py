@@ -43,14 +43,22 @@ NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish
 
 def gh(url, params=None):
     """Make a GitHub API request with auth token."""
-    r = requests.get(url, headers=HEADERS, params=params)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, headers=HEADERS, params=params)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            # For restricted repos, log warning and return None
+            repo_name = url.split("/repos/")[-1].split("/")[1] if "/repos/" in url else "unknown"
+            print(f"Warning: Access denied to repo {repo_name} (403 Forbidden)")
+            return None
+        raise
 
 def get_head_sha(owner, repo, ref):
     """Get the SHA of the HEAD commit."""
     data = gh(f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}")
-    return data.get("sha")
+    return data.get("sha") if data else None
 
 def priority(status, conclusion):
     """Priority order for test status (lower = higher priority/worse)."""
@@ -65,14 +73,14 @@ def priority(status, conclusion):
 def default_branch(owner, repo):
     """Get the default branch of a repo."""
     r = gh(f"https://api.github.com/repos/{owner}/{repo}")
-    return r.get("default_branch","main")
+    return r.get("default_branch","main") if r else "main"
 
 def get_workflow_runs(owner, repo, workflow_id):
     """Get the latest run for a specific workflow."""
     try:
         url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs"
         data = gh(url, params={"per_page": 1, "branch": "develop"})
-        if data["workflow_runs"]:
+        if data and data.get("workflow_runs"):
             latest_run = data["workflow_runs"][0]
             return {
                 "status": latest_run["conclusion"] or latest_run["status"],
@@ -81,7 +89,7 @@ def get_workflow_runs(owner, repo, workflow_id):
                 "name": latest_run["name"]
             }
     except Exception as e:
-        print(f"Error fetching workflow {workflow_id}: {e}")
+        print(f"Error fetching workflow {workflow_id} for {owner}/{repo}: {e}")
     return None
 
 def list_repos(org):
@@ -92,10 +100,12 @@ def list_repos(org):
         data = gh(f"https://api.github.com/orgs/{org}/repos",
                   params={"per_page": 100, "page": page, "type": "all", "sort": "full_name"})
         if not data:
+            # If we get None (403 forbidden), try the user endpoint
             break
         repos.extend(data)
         page += 1
-    # User endpoint (helps with fine-grained PATs)
+    
+    # If org endpoint failed or to complement it, try user endpoint
     names = {r["name"] for r in repos}
     page = 1
     while True:
@@ -108,6 +118,11 @@ def list_repos(org):
                 repos.append(r)
                 names.add(r["name"])
         page += 1
+    
+    # If we have no repos at all, something's wrong with the token
+    if not repos:
+        print(f"Warning: No repositories found for organization {org}. Check your GitHub token permissions.")
+    
     return repos
 
 def read_file_version(owner, repo, path, ref):
@@ -144,17 +159,20 @@ def read_file_version(owner, repo, path, ref):
 
 def detect_version(owner, repo, ref):
     """Try to detect version from various files."""
-    for p in VERSION_PATHS:
-        v = read_file_version(owner, repo, p, ref)
-        if v:
-            return v, p
     try:
+        # First try version files
+        for p in VERSION_PATHS:
+            v = read_file_version(owner, repo, p, ref)
+            if v:
+                return v, p
+        
+        # Fall back to git tags
         tags = gh(f"https://api.github.com/repos/{owner}/{repo}/tags", params={"per_page": 1})
         if tags:
             return tags[0]["name"], "git tag (fallback)"
-    except Exception:
-        pass
-    return None, None
+    except Exception as e:
+        print(f"Error detecting version for {owner}/{repo}: {e}")
+    return None, "access denied/not found"
 
 def get_monorepo_test_status():
     """Get status of all monitored test workflows in the platform-monorepo."""
