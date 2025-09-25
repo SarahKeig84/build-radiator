@@ -234,12 +234,23 @@ def build_cards():
             "default_branch": ref,
             "version": ver or "—",
             "version_source": vsrc or "n/a",
-            "overall": overall,     # overall per repo
-            "subtests": subtests,   # list of per-project signals
+            "overall": overall,
+            "subtests": subtests,
+            "has_tests": bool(subtests),
             "html_url": r["html_url"],
         })
-    return sorted(items, key=lambda x: x["repo"].lower())
 
+    # Order repo cards:
+    # 1) Repos WITH tests first, then those without
+    # 2) Within "has tests": failing → in_progress → success → unknown
+    # 3) Newer updates first
+    # 4) Finally A–Z by name (stable tie-breaker)
+    items.sort(key=lambda it: it["repo"].lower())
+    items.sort(key=lambda it: it["overall"].get("updated_at") or "", reverse=True)
+    items.sort(key=lambda it: priority(it["overall"].get("status"), it["overall"].get("conclusion")))
+    items.sort(key=lambda it: 0 if it["has_tests"] else 1)
+
+    return items
 
 def render(items):
     Path("dist").mkdir(parents=True, exist_ok=True)
