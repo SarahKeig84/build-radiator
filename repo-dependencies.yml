@@ -1,0 +1,7 @@
+# Repository dependencies configuration
+repositories:
+  netbox-enterprise:
+    dependencies:
+      - netbox-assurance
+      - netbox-diode
+  # Add more repositories and their dependencies as needed

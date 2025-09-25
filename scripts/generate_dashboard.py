@@ -216,12 +216,113 @@ def compare_versions(current, latest):
     except Exception:
         return None
 
+def discover_repo_dependencies(owner, repo, ref):
+    """Discover repository dependencies by analyzing various sources."""
+    dependencies = set()
+
+    # Check submodules
+    try:
+        submodules = gh(f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1")
+        if submodules and submodules.get("tree"):
+            for item in submodules["tree"]:
+                if item["path"].endswith(".gitmodules"):
+                    content = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/{item['path']}", params={"ref": ref})
+                    if content:
+                        decoded = base64.b64decode(content["content"]).decode("utf-8")
+                        # Parse submodule URLs
+                        for line in decoded.splitlines():
+                            if "url =" in line:
+                                url = line.split("=")[1].strip()
+                                if f"github.com/{owner}/" in url:
+                                    dep_repo = url.split(f"github.com/{owner}/")[1].replace(".git", "")
+                                    dependencies.add(dep_repo)
+    except Exception as e:
+        print(f"Warning: Error checking submodules: {e}")
+
+    # Check workflow files
+    try:
+        workflows = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/.github/workflows", params={"ref": ref})
+        if workflows:
+            for workflow in workflows:
+                content = gh(workflow["url"])
+                if content:
+                    decoded = base64.b64decode(content["content"]).decode("utf-8")
+                    yaml_content = yaml.safe_load(decoded)
+                    
+                    # Check uses statements in workflows
+                    def scan_uses(obj):
+                        if isinstance(obj, dict):
+                            for k, v in obj.items():
+                                if k == "uses" and isinstance(v, str):
+                                    if v.startswith(f"{owner}/"):
+                                        dep_repo = v.split("/")[1].split("@")[0]
+                                        dependencies.add(dep_repo)
+                                elif isinstance(v, (dict, list)):
+                                    scan_uses(v)
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                scan_uses(item)
+                    
+                    scan_uses(yaml_content)
+    except Exception as e:
+        print(f"Warning: Error checking workflow dependencies: {e}")
+
+    # Check package.json repository dependencies
+    try:
+        package_json = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/package.json", params={"ref": ref})
+        if package_json:
+            content = json.loads(base64.b64decode(package_json["content"]).decode("utf-8"))
+            deps = content.get("dependencies", {})
+            dev_deps = content.get("devDependencies", {})
+            
+            for name, version in {**deps, **dev_deps}.items():
+                if isinstance(version, str) and version.startswith(f"github:{owner}/"):
+                    dep_repo = version.split(f"github:{owner}/")[1].split("#")[0]
+                    dependencies.add(dep_repo)
+    except Exception:
+        pass
+
+    return list(dependencies)
+
+def get_repo_dependencies(owner, repo, ref):
+    """Get repository dependencies both from config and discovery."""
+    dependencies = set()
+    
+    # Try loading from config file
+    try:
+        with open("repo-dependencies.yml") as f:
+            config = yaml.safe_load(f)
+            repo_config = config.get("repositories", {}).get(repo, {})
+            dependencies.update(repo_config.get("dependencies", []))
+    except Exception as e:
+        print(f"Warning: Could not load repo dependencies from config: {e}")
+    
+    # Add discovered dependencies
+    dependencies.update(discover_repo_dependencies(owner, repo, ref))
+    
+    return list(dependencies)
+
 def get_dependencies(owner, repo, ref):
-    """Get dependencies from package.json, pyproject.toml, or requirements.txt."""
+    """Get dependencies from package.json, pyproject.toml, requirements.txt, and cross-repo dependencies."""
     dependencies = {
         "python": [],
-        "node": []
+        "node": [],
+        "repos": []
     }
+    
+    # Check cross-repo dependencies
+    repo_deps = get_repo_dependencies(owner, repo, ref)
+    for dep_repo in repo_deps:
+        # Get the status of the dependent repo
+            dep_branch = default_branch(owner, dep_repo)
+            dep_sha = get_head_sha(owner, dep_repo, dep_branch)
+            if dep_sha:
+                dependencies["repos"].append({
+                    "name": dep_repo,
+                    "branch": dep_branch,
+                    "sha": dep_sha[:7],
+                    "url": f"https://github.com/{owner}/{dep_repo}"
+                })
     
     # Check package.json
     try:
@@ -772,8 +873,20 @@ def render_dashboard():
                             </div>
                         {% endif %}
                         
-                        {% if card.dependencies.python or card.dependencies.node %}
+                        {% if card.dependencies.python or card.dependencies.node or card.dependencies.repos %}
                             <div class="deps-section">
+                                {% if card.dependencies.repos %}
+                                    <div class="deps-header">Repository Dependencies</div>
+                                    <div class="deps-list">
+                                        {% for dep in card.dependencies.repos %}
+                                            <div class="deps-item">
+                                                <a href="{{ dep.url }}" target="_blank">{{ dep.name }}</a>
+                                                <span class="commit-sha">{{ dep.sha }}</span>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
+                                
                                 {% if card.dependencies.python %}
                                     <div class="deps-header">Python Dependencies</div>
                                     {% if card.outdated_deps.python > 0 %}
