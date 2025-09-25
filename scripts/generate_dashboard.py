@@ -389,23 +389,32 @@ def render_dashboard():
                 border-bottom: 2px solid #eaecef;
                 padding-bottom: 0.3em;
             }
-            .workflow { 
-                padding: 1rem;
-                margin: 0.5rem 0;
-                border-radius: 6px;
-                border: 1px solid #eaecef;
-                transition: all 0.2s ease;
-            }
-            .repo-card {
+            .workflow, .repo-card { 
                 padding: 1rem;
                 border-radius: 6px;
                 border: 1px solid #eaecef;
                 transition: all 0.2s ease;
                 height: 100%;
+                display: flex;
+                flex-direction: column;
+                gap: 0.5rem;
             }
             .workflow:hover, .repo-card:hover {
                 box-shadow: 0 4px 8px rgba(0,0,0,0.1);
                 transform: translateY(-2px);
+            }
+            .test-header {
+                color: #6e7681;
+                font-size: 0.9em;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            .test-name {
+                font-size: 1.1em;
+                margin: 0.25rem 0;
+            }
+            .test-status {
+                margin: 0.5rem 0;
             }
             /* Card background colors */
             .repo-card.success { 
@@ -490,26 +499,30 @@ def render_dashboard():
             
             <div class="section">
                 <h2>🚀 Platform Monorepo Tests</h2>
-                
-                <div class="subsection">
-                    <h3>Integration Tests</h3>
+                <div class="grid">
                     {% for test in monorepo_tests.integration_tests %}
                         <div class="workflow {{ test.status }}">
-                            <strong><a href="{{ test.url }}">{{ test.name }}</a></strong>
-                            <div>
+                            <div class="test-header">
+                                <strong>Integration Test</strong>
+                            </div>
+                            <div class="test-name">
+                                <a href="{{ test.url }}">{{ test.name }}</a>
+                            </div>
+                            <div class="test-status">
                                 <span class="status-badge status-{{ test.status }}">{{ test.status }}</span>
                             </div>
                             <div class="timestamp">Last updated: {{ test.updated }}</div>
                         </div>
                     {% endfor %}
-                </div>
-                
-                <div class="subsection">
-                    <h3>Console UI Tests</h3>
                     {% for test in monorepo_tests.console_ui_tests %}
                         <div class="workflow {{ test.status }}">
-                            <strong><a href="{{ test.url }}">{{ test.name }}</a></strong>
-                            <div>
+                            <div class="test-header">
+                                <strong>Console UI Test</strong>
+                            </div>
+                            <div class="test-name">
+                                <a href="{{ test.url }}">{{ test.name }}</a>
+                            </div>
+                            <div class="test-status">
                                 <span class="status-badge status-{{ test.status }}">{{ test.status }}</span>
                             </div>
                             <div class="timestamp">Last updated: {{ test.updated }}</div>
