@@ -393,21 +393,40 @@ def render_dashboard():
             .workflow:hover, .repo-card:hover {
                 box-shadow: 0 2px 5px rgba(0,0,0,0.1);
             }
-            .success { 
+            /* Card background colors */
+            .repo-card.success { 
                 background-color: #f0fff4;
                 border-color: #98e3b3;
             }
-            .failure { 
+            .repo-card.failure { 
                 background-color: #fff5f5;
                 border-color: #feb2b2;
             }
-            .pending, .in_progress { 
+            .repo-card.pending, .repo-card.in_progress { 
                 background-color: #fffaf0;
                 border-color: #fbd38d;
             }
-            .skipped, .unknown { 
+            .repo-card.skipped, .repo-card.unknown { 
                 background-color: #f7fafc;
                 border-color: #cbd5e0;
+            }
+            
+            /* Workflow item colors */
+            .workflow.success { 
+                background-color: #dcffe4;
+                border-color: #31c48d;
+            }
+            .workflow.failure { 
+                background-color: #ffe5e5;
+                border-color: #f05252;
+            }
+            .workflow.pending, .workflow.in_progress { 
+                background-color: #feecdc;
+                border-color: #ff8a4c;
+            }
+            .workflow.skipped, .workflow.unknown { 
+                background-color: #f3f4f6;
+                border-color: #9ca3af;
             }
             .timestamp { 
                 color: #6a737d;
@@ -488,12 +507,22 @@ def render_dashboard():
             <div class="section">
                 <h2>📦 All Repositories</h2>
                 {% for card in repo_cards %}
-                    <div class="repo-card {{ card.overall.status }}">
+                    {% set overall_status = card.overall.conclusion or card.overall.status or 'unknown' %}
+                    {% if overall_status == 'success' %}
+                        {% set card_class = 'success' %}
+                    {% elif overall_status in ['failure', 'timed_out', 'cancelled', 'action_required'] %}
+                        {% set card_class = 'failure' %}
+                    {% elif overall_status in ['in_progress', 'queued', 'pending'] %}
+                        {% set card_class = 'pending' %}
+                    {% else %}
+                        {% set card_class = 'unknown' %}
+                    {% endif %}
+                    <div class="repo-card {{ card_class }}">
                         <div class="repo-header">
                             <strong><a href="{{ card.html_url }}">{{ card.repo }}</a></strong>
                             <span class="version-tag">{{ card.version }}</span>
                             {% if card.overall.html_url %}
-                                <a href="{{ card.overall.html_url }}" class="status-badge status-{{ card.overall.status or card.overall.conclusion or 'unknown' }}">
+                                <a href="{{ card.overall.html_url }}" class="status-badge status-{{ overall_status }}">
                                     {{ card.overall.label }}
                                 </a>
                             {% endif %}
