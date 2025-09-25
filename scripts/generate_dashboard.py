@@ -532,7 +532,12 @@ def render_dashboard():
         generation_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     )
     
-    output_path = Path("dashboard.html")
+    # Create dist directory if it doesn't exist
+    dist_dir = Path("dist")
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Write dashboard.html to the dist directory
+    output_path = dist_dir / "dashboard.html"
     output_path.write_text(html)
     print(f"Dashboard generated at {output_path.absolute()}")
 
