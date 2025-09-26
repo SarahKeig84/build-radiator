@@ -49,6 +49,7 @@ NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish
 def gh(url, params=None):
     """Make a GitHub API request with auth token."""
     try:
+        print(f"DEBUG: Requesting {url}")  # Debug line
         r = requests.get(url, headers=HEADERS, params=params)
         r.raise_for_status()
         return r.json()
@@ -58,6 +59,7 @@ def gh(url, params=None):
             repo_name = url.split("/repos/")[-1].split("/")[1] if "/repos/" in url else "unknown"
             status_map = {403: "Access denied", 404: "Not found", 409: "Conflict"}
             print(f"Warning: {status_map[e.response.status_code]} for repo {repo_name} ({e.response.status_code})")
+            print(f"DEBUG: Full URL that failed: {url}")  # Debug line
             return None
         raise
 
@@ -1055,8 +1057,8 @@ def render_dashboards():
     # Sort cards by test status (failures first) for main dashboard
     test_cards = sorted(repo_cards, key=lambda x: 
         min((priority(run["status"], run.get("conclusion")) 
-            for run in x["test_runs"]) 
-            if x["test_runs"] else 3))
+            for run in x.get("test_runs", [])) 
+            if x.get("test_runs") else 3))
     
     # Sort cards by name for dependencies dashboard
     dep_cards = sorted(repo_cards, key=lambda x: x["repo"])
