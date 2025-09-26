@@ -1053,11 +1053,10 @@ def render_dashboards():
     repo_cards = build_cards()
     
     # Sort cards by test status (failures first) for main dashboard
-    test_cards = sorted(repo_cards, key=lambda x: (
+    test_cards = sorted(repo_cards, key=lambda x: 
         min((priority(run["status"], run.get("conclusion")) 
             for run in x["test_runs"]) 
-            if x["test_runs"] else 3
-    ))
+            if x["test_runs"] else 3))
     
     # Sort cards by name for dependencies dashboard
     dep_cards = sorted(repo_cards, key=lambda x: x["repo"])
