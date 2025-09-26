@@ -217,9 +217,51 @@ def compare_versions(current, latest):
     except Exception:
         return None
 
+def get_helm_dependencies(owner, repo, ref):
+    """Extract dependencies from Helm charts."""
+    dependencies = set()
+    
+    # Check both possible Helm chart locations
+    chart_paths = [
+        "chart/Chart.yaml",
+        "Chart.yaml"
+    ]
+    
+    for chart_path in chart_paths:
+        try:
+            chart_yaml = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/{chart_path}", params={"ref": ref})
+            if chart_yaml:
+                content = yaml.safe_load(base64.b64decode(chart_yaml["content"]).decode("utf-8"))
+                # Check dependencies section in Chart.yaml
+                for dep in content.get("dependencies", []):
+                    repo_name = dep.get("name", "")
+                    # If it's a GitHub repository reference
+                    if "repository" in dep:
+                        repo_url = dep["repository"]
+                        if f"github.com/{owner}/" in repo_url:
+                            dep_repo = repo_url.split(f"github.com/{owner}/")[1].replace(".git", "")
+                            dependencies.add(dep_repo)
+                        # Also check for repos that might be referenced by name only
+                        elif repo_name.startswith(f"{owner}-") or repo_name.startswith("netbox-"):
+                            dependencies.add(repo_name)
+        except Exception as e:
+            print(f"Warning: Error checking Helm dependencies in {chart_path}: {e}")
+    
+    return dependencies
+
 def discover_repo_dependencies(owner, repo, ref):
     """Discover repository dependencies by analyzing various sources."""
     dependencies = set()
+
+    # Never include the repo itself as a dependency
+    def add_dependency(dep_repo):
+        if dep_repo != repo:
+            dependencies.add(dep_repo)
+
+    # Check Helm dependencies
+    helm_deps = get_helm_dependencies(owner, repo, ref)
+    for dep in helm_deps:
+        add_dependency(dep)
 
     # Check submodules
     try:
@@ -257,7 +299,7 @@ def discover_repo_dependencies(owner, repo, ref):
                                 if k == "uses" and isinstance(v, str):
                                     if v.startswith(f"{owner}/"):
                                         dep_repo = v.split("/")[1].split("@")[0]
-                                        dependencies.add(dep_repo)
+                                        add_dependency(dep_repo)
                                 elif isinstance(v, (dict, list)):
                                     scan_uses(v)
                         elif isinstance(obj, list):
@@ -279,7 +321,7 @@ def discover_repo_dependencies(owner, repo, ref):
             for name, version in {**deps, **dev_deps}.items():
                 if isinstance(version, str) and version.startswith(f"github:{owner}/"):
                     dep_repo = version.split(f"github:{owner}/")[1].split("#")[0]
-                    dependencies.add(dep_repo)
+                    add_dependency(dep_repo)
     except Exception:
         pass
 
@@ -876,7 +918,7 @@ def render_dashboard():
                         {% if card.dependencies.python or card.dependencies.node or card.dependencies.repos %}
                             <div class="deps-section">
                                 {% if card.dependencies.repos %}
-                                    <div class="deps-header">Repository Dependencies</div>
+                                    <div class="deps-header"><strong>Repository Dependencies</strong></div>
                                     <div class="deps-list">
                                         {% for dep in card.dependencies.repos %}
                                             <div class="deps-item">
@@ -888,7 +930,7 @@ def render_dashboard():
                                 {% endif %}
                                 
                                 {% if card.dependencies.python %}
-                                    <div class="deps-header">Python Dependencies</div>
+                                    <div class="deps-header"><strong>Python Dependencies</strong></div>
                                     {% if card.outdated_deps.python > 0 %}
                                         <span class="deps-badge deps-outdated">{{ card.outdated_deps.python }} outdated</span>
                                     {% else %}
@@ -910,7 +952,7 @@ def render_dashboard():
                                 {% endif %}
                                 
                                 {% if card.dependencies.node %}
-                                    <div class="deps-header">Node Dependencies</div>
+                                    <div class="deps-header"><strong>Node Dependencies</strong></div>
                                     {% if card.outdated_deps.node > 0 %}
                                         <span class="deps-badge deps-outdated">{{ card.outdated_deps.node }} outdated</span>
                                     {% else %}
