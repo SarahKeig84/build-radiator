@@ -641,7 +641,7 @@ def build_cards():
     items = []
     for r in list_repos(ORG):
         repo = r["name"]
-        if r.get("archived"):
+        if r.get("archived") or repo == ".github":
             continue
         ref = default_branch(ORG, repo)
         ver, vsrc = detect_version(ORG, repo, ref)
