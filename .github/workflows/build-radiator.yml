@@ -1,16 +1,3 @@
-name: Build Radiator
-
-on:
-  workflow_dispatch: {}
-  #schedule:
-   # - cron: "*/10 * * * *"  # every 10 minutes
-
-permissions:
-  contents: read
-  actions: read
-  pages: write
-  id-token: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,6 +15,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install tomli PyYAML jinja2 requests packaging
 
+      # 👇 Rate-limit check (before)
+      - name: Show GitHub REST API rate limit (before)
+        env:
+          AUTH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          H=$(curl -sS -D - -o /dev/null \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/user)
+          L=$(grep -i '^x-ratelimit-limit:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          R=$(grep -i '^x-ratelimit-remaining:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          U=$(grep -i '^x-ratelimit-used:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          E=$(grep -i '^x-ratelimit-reset:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          T=$(date -u -d "@$E" +"%Y-%m-%d %H:%M:%S UTC")
+          echo "Rate limit BEFORE: limit=$L remaining=$R used=$U reset_epoch=$E reset=$T"
+
       - name: Generate dashboard
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -35,16 +40,25 @@ jobs:
         run: |
           python scripts/generate_dashboard.py
 
-
+      # 👇 Rate-limit check (after)
+      - name: Show GitHub REST API rate limit (after)
+        env:
+          AUTH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          H=$(curl -sS -D - -o /dev/null \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/user)
+          L=$(grep -i '^x-ratelimit-limit:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          R=$(grep -i '^x-ratelimit-remaining:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          U=$(grep -i '^x-ratelimit-used:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          E=$(grep -i '^x-ratelimit-reset:' <<<"$H" | awk '{print $2}' | tr -d '\r')
+          T=$(date -u -d "@$E" +"%Y-%m-%d %H:%M:%S UTC")
+          echo "Rate limit AFTER:  limit=$L remaining=$R used=$U reset_epoch=$E reset=$T"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
