@@ -871,6 +871,9 @@ def render_dashboard():
     <body>
         <div class="container">
             <h1>🔍 NetBox Labs Build Radiator</h1>
+            <div class="nav-links" style="margin: 1rem 0;">
+                <a href="dependencies.html" style="color: #58a6ff; text-decoration: none;">View Dependencies Dashboard</a>
+            </div>
             
             <div class="section">
                 <h2>🚀 Platform Monorepo Tests</h2>
@@ -1041,5 +1044,35 @@ def render_dashboard():
     output_path.write_text(html)
     print(f"Dashboard generated at {output_path.absolute()}")
 
+def render_dashboards():
+    """Generate and write both dashboard HTMLs."""
+    # Create dist directory if it doesn't exist
+    Path("dist").mkdir(exist_ok=True)
+    
+    # Build repo cards
+    repo_cards = build_cards()
+    
+    # Sort cards by test status (failures first) for main dashboard
+    test_cards = sorted(repo_cards, key=lambda x: (
+        min((priority(run["status"], run.get("conclusion")) 
+            for run in x["test_runs"]) 
+            if x["test_runs"] else 3
+    ))
+    
+    # Sort cards by name for dependencies dashboard
+    dep_cards = sorted(repo_cards, key=lambda x: x["repo"])
+    
+    # Load templates
+    with open("templates/dependencies.html", "r", encoding="utf-8") as f:
+        deps_template = Template(f.read())
+    
+    # Render main dashboard
+    with open("dist/index.html", "w", encoding="utf-8") as f:
+        f.write(DASHBOARD_TEMPLATE.render(cards=test_cards))
+    
+    # Render dependencies dashboard
+    with open("dist/dependencies.html", "w", encoding="utf-8") as f:
+        f.write(deps_template.render(cards=dep_cards))
+
 if __name__ == "__main__":
-    render_dashboard()
+    render_dashboards()
