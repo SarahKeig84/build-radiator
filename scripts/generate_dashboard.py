@@ -217,6 +217,15 @@ def compare_versions(current, latest):
     except Exception:
         return None
 
+def clean_repo_name(name):
+    """Clean repository name to a consistent format."""
+    # Remove common prefixes
+    prefixes = ["netboxlabs-", "netbox-", "nbl-"]
+    for prefix in prefixes:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
 def get_helm_dependencies(owner, repo, ref):
     """Extract dependencies from Helm charts."""
     dependencies = set()
@@ -227,26 +236,52 @@ def get_helm_dependencies(owner, repo, ref):
         "Chart.yaml"
     ]
     
+    print(f"Checking Helm dependencies for {owner}/{repo}")
+    
     for chart_path in chart_paths:
         try:
+            print(f"  Checking {chart_path}")
             chart_yaml = gh(f"https://api.github.com/repos/{owner}/{repo}/contents/{chart_path}", params={"ref": ref})
             if chart_yaml:
+                print(f"  Found {chart_path}")
                 content = yaml.safe_load(base64.b64decode(chart_yaml["content"]).decode("utf-8"))
+                print(f"  Chart content: {json.dumps(content, indent=2)}")
+                
                 # Check dependencies section in Chart.yaml
-                for dep in content.get("dependencies", []):
+                deps = content.get("dependencies", [])
+                print(f"  Found {len(deps)} dependencies")
+                
+                for dep in deps:
                     repo_name = dep.get("name", "")
+                    print(f"  Processing dependency: {repo_name}")
+                    
                     # If it's a GitHub repository reference
                     if "repository" in dep:
                         repo_url = dep["repository"]
-                        if f"github.com/{owner}/" in repo_url:
+                        print(f"    Repository URL: {repo_url}")
+                        
+                        # Try to extract dependency name from various formats
+                        if "oci://" in repo_url.lower() or "registry" in repo_url.lower():
+                            # For OCI/registry references, use the chart name
+                            clean_name = clean_repo_name(repo_name)
+                            if clean_name:
+                                print(f"    Adding OCI registry dependency: {clean_name}")
+                                dependencies.add(clean_name)
+                        elif f"github.com/{owner}/" in repo_url:
+                            # For direct GitHub URLs
                             dep_repo = repo_url.split(f"github.com/{owner}/")[1].replace(".git", "")
-                            dependencies.add(dep_repo)
-                        # Also check for repos that might be referenced by name only
-                        elif repo_name.startswith(f"{owner}-") or repo_name.startswith("netbox-"):
-                            dependencies.add(repo_name)
+                            clean_name = clean_repo_name(dep_repo)
+                            print(f"    Adding GitHub dependency: {clean_name}")
+                            dependencies.add(clean_name)
+                        elif repo_name:
+                            # For repos referenced by name
+                            clean_name = clean_repo_name(repo_name)
+                            print(f"    Adding named dependency: {clean_name}")
+                            dependencies.add(clean_name)
         except Exception as e:
             print(f"Warning: Error checking Helm dependencies in {chart_path}: {e}")
     
+    print(f"Found Helm dependencies: {dependencies}")
     return dependencies
 
 def discover_repo_dependencies(owner, repo, ref):
@@ -255,10 +290,15 @@ def discover_repo_dependencies(owner, repo, ref):
 
     # Never include the repo itself as a dependency
     def add_dependency(dep_repo):
+        # Clean up repo name if it's a full URL or contains organization
+        if "/" in dep_repo:
+            dep_repo = dep_repo.split("/")[-1]
+        if dep_repo.startswith(f"{owner}-"):
+            dep_repo = dep_repo[len(f"{owner}-"):]
         if dep_repo != repo:
             dependencies.add(dep_repo)
 
-    # Check Helm dependencies
+    # Check Helm dependencies first as they're the most reliable source
     helm_deps = get_helm_dependencies(owner, repo, ref)
     for dep in helm_deps:
         add_dependency(dep)
