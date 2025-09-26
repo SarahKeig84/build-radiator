@@ -2,8 +2,8 @@ name: Build Radiator
 
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: "*/10 * * * *"  # every 10 minutes
+  #schedule:
+   # - cron: "*/10 * * * *"  # every 10 minutes
 
 permissions:
   contents: read
