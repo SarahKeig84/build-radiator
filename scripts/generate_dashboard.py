@@ -1076,9 +1076,12 @@ def render_dashboards():
     with open("templates/dependencies.html", "r", encoding="utf-8") as f:
         deps_template = Template(f.read())
     
+    with open("templates/dashboard.html", "r", encoding="utf-8") as f:
+        main_template = Template(f.read())
+    
     # Render main dashboard
     with open("dist/index.html", "w", encoding="utf-8") as f:
-        f.write(DASHBOARD_TEMPLATE.render(cards=test_cards))
+        f.write(main_template.render(cards=test_cards))
     
     # Render dependencies dashboard
     with open("dist/dependencies.html", "w", encoding="utf-8") as f:

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Build Status Dashboard</title>
+    <style>
+        body {
+            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            margin: 0;
+            color: #58a6ff;
+        }
+        .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+        .nav-links a {
+            color: #58a6ff;
+            text-decoration: none;
+            padding: 8px 16px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+        }
+        .card-header {
+            margin: -16px -16px 16px -16px;
+            padding: 16px;
+            background: #1c2128;
+            border-bottom: 1px solid #30363d;
+            border-radius: 6px 6px 0 0;
+        }
+        .card-header h2 {
+            margin: 0;
+            font-size: 1.25em;
+        }
+        .card-header a {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        .workflow-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 16px;
+        }
+        .workflow {
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .workflow.success {
+            background: #238636;
+            color: white;
+        }
+        .workflow.failure {
+            background: #da3633;
+            color: white;
+        }
+        .workflow.pending {
+            background: #9e6a03;
+            color: white;
+        }
+        .workflow a {
+            color: inherit;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Build Status Dashboard</h1>
+        <div class="nav-links">
+            <a href="index.html">Test Status</a>
+            <a href="dependencies.html">Dependencies</a>
+        </div>
+    </div>
+    <div class="grid">
+        {% for card in cards %}
+        <div class="card">
+            <div class="card-header">
+                <h2><a href="https://github.com/netboxlabs/{{ card.repo }}">{{ card.repo }}</a></h2>
+            </div>
+            <div class="workflow-grid">
+                {% for run in card.test_runs %}
+                <div class="workflow {{ run.status if run.status == 'pending' else run.conclusion|default('pending') }}">
+                    <a href="{{ run.url }}">{{ run.name }}</a>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
