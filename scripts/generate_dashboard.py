@@ -46,13 +46,22 @@ VERSION_PATHS = [
 TEST_WORKFLOW_RE = re.compile(r"(test|tests|pytest|unit|integration|e2e|ci|TestSuites)", re.I)
 NON_TEST_HINT = re.compile(r"(doc|docs|page|pages|website|release|docker|publish|deploy|package|lint|format|codeql)", re.I)
 
+# Cache for GitHub API responses
+_gh_cache = {}
+
 def gh(url, params=None):
     """Make a GitHub API request with auth token."""
+    cache_key = f"{url}:{str(params)}"
+    if cache_key in _gh_cache:
+        return _gh_cache[cache_key]
+    
     try:
         print(f"DEBUG: Requesting {url}")  # Debug line
         r = requests.get(url, headers=HEADERS, params=params)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        _gh_cache[cache_key] = data
+        return data
     except requests.exceptions.HTTPError as e:
         if e.response.status_code in (403, 404, 409):
             # For restricted, not found, or conflict repos, log warning and return None
@@ -1056,9 +1065,9 @@ def render_dashboards():
     
     # Sort cards by test status (failures first) for main dashboard
     test_cards = sorted(repo_cards, key=lambda x: 
-        min((priority(run["status"], run.get("conclusion")) 
-            for run in x.get("test_runs", [])) 
-            if x.get("test_runs") else 3))
+        min([priority(run["status"], run.get("conclusion")) 
+            for run in x.get("test_runs", [])]
+            if x.get("test_runs") else [3]))
     
     # Sort cards by name for dependencies dashboard
     dep_cards = sorted(repo_cards, key=lambda x: x["repo"])
