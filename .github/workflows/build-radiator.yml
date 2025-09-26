@@ -30,21 +30,17 @@ jobs:
 
       # Rate-limit check (before the script runs)
       - name: Show GitHub REST API rate limit (before)
+        shell: bash
         env:
           AUTH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
-          H=$(curl -sS -D - -o /dev/null \
+          curl -s \
             -H "Authorization: Bearer $AUTH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/user)
-          L=$(grep -i '^x-ratelimit-limit:' <<<"$H" | awk '{print $2}' | tr -d '\r')
-          R=$(grep -i '^x-ratelimit-remaining:' <<<"$H" | awk '{print $2}' | tr -d '\r')
-          U=$(grep -i '^x-ratelimit-used:' <<<"$H" | awk '{print $2}' | tr -d '\r')
-          E=$(grep -i '^x-ratelimit-reset:' <<<"$H" | awk '{print $2}' | tr -d '\r')
-          T=$(date -u -d "@$E" +"%Y-%m-%d %H:%M:%S UTC")
-          echo "Rate limit BEFORE: limit=$L remaining=$R used=$U reset_epoch=$E reset=$T"
+            https://api.github.com/rate_limit |
+          jq -r '.resources.core as $c | "BEFORE: limit=\($c.limit) remaining=\($c.remaining) used=\($c.used) reset_epoch=\($c.reset) reset=\($c.reset|todate)"'
 
       - name: Generate dashboard
         env:
@@ -55,13 +51,26 @@ jobs:
 
       # Rate-limit check (after the script runs)
       - name: Show GitHub REST API rate limit (after)
+        shell: bash
         env:
           AUTH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
-          H=$(curl -sS -D - -o /dev/null \
+          curl -s \
             -H "Authorization: Bearer $AUTH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/user)
-          L=$(grep -i '^x-ratelimit-limit:' <<<"$H" | a
+            https://api.github.com/rate_limit |
+          jq -r '.resources.core as $c | "AFTER:  limit=\($c.limit) remaining=\($c.remaining) used=\($c.used) reset_epoch=\($c.reset) reset=\($c.reset|todate)"'
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
