@@ -45,9 +45,18 @@ def get_repo_contents(owner, repo, path=""):
 
 def get_file_content(content_obj):
     """Get decoded content from a GitHub file object."""
+    if not content_obj or not isinstance(content_obj, dict):
+        return None
     if content_obj.get("type") != "file":
         return None
-    return base64.b64decode(content_obj["content"]).decode("utf-8")
+    if "content" not in content_obj:
+        print(f"Warning: No content field in response for {content_obj.get('path', 'unknown file')}")
+        return None
+    try:
+        return base64.b64decode(content_obj["content"]).decode("utf-8")
+    except Exception as e:
+        print(f"Warning: Failed to decode content for {content_obj.get('path', 'unknown file')}: {e}")
+        return None
 
 def scan_repo_for_mentions(owner, repo, all_repos):
     """Scan a repository for mentions of other repositories."""
@@ -59,19 +68,35 @@ def scan_repo_for_mentions(owner, repo, all_repos):
         return mentions
         
     def process_item(item):
+        if not item:
+            return
+            
         if isinstance(item, list):
             for i in item:
                 process_item(i)
             return
             
+        if not isinstance(item, dict):
+            print(f"Warning: Unexpected item type {type(item)} in repo {repo}")
+            return
+            
         if item.get("type") == "dir":
-            dir_contents = get_repo_contents(owner, repo, item["path"])
-            process_item(dir_contents)
+            try:
+                dir_contents = get_repo_contents(owner, repo, item.get("path", ""))
+                process_item(dir_contents)
+            except Exception as e:
+                print(f"Warning: Failed to process directory in {repo}: {e}")
             return
             
         if item.get("type") == "file":
-            # Skip binary files
-            if item["name"].endswith(('.pyc', '.bin', '.png', '.jpg', '.pdf', '.zip')):
+            # Skip binary files and large files
+            name = item.get("name", "")
+            if not name or name.endswith(('.pyc', '.bin', '.png', '.jpg', '.pdf', '.zip', '.gz', '.jar')):
+                return
+            
+            # Skip files that are too large (API returns different format for them)
+            if item.get("size", 0) > 1024 * 1024:  # Skip files > 1MB
+                print(f"Skipping large file {repo}/{name} ({item.get('size', 0)} bytes)")
                 return
                 
             content = get_file_content(item)
@@ -82,9 +107,12 @@ def scan_repo_for_mentions(owner, repo, all_repos):
             for target_repo in all_repos:
                 if target_repo == repo:
                     continue
-                pattern = re.compile(MENTION_PATTERN_TEMPLATE.format(repo=re.escape(target_repo)))
-                if pattern.search(content):
-                    mentions.add(target_repo)
+                try:
+                    pattern = re.compile(MENTION_PATTERN_TEMPLATE.format(repo=re.escape(target_repo)))
+                    if pattern.search(content):
+                        mentions.add(target_repo)
+                except Exception as e:
+                    print(f"Warning: Failed to check for mentions in {repo}/{name}: {e}")
     
     process_item(contents)
     return mentions
