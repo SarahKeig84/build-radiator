@@ -1,0 +1,17 @@
+RepoScanner/.env
+RepoScanner/README.md
+RepoScanner/requirements.txt
+RepoScanner/run_dashboard.bat
+RepoScanner/data/cross_repo_mentions.json
+RepoScanner/data/enterprise_plugins_report.json
+RepoScanner/data/helm_chart_versions_api.json
+RepoScanner/data/helm_chart_versions.json
+RepoScanner/data/repo_release_summary.json
+RepoScanner/data/upstream_version_report.json
+RepoScanner/scripts/check_helm_chart_info.py
+RepoScanner/scripts/check_repo_releases.py
+RepoScanner/scripts/cross_repo_mentions.py
+RepoScanner/scripts/enterprise_plugins.py
+RepoScanner/scripts/get_gchp_endpoints.py
+RepoScanner/scripts/scan_upstream_versions.py
+RepoScanner/web/app.py

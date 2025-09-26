@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Build Status Dashboard</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="120">
+    <style>
+        /* Existing styles here */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f6f8fa;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        
+        .repo-card, .workflow {
+            background: white;
+            border: 1px solid #e1e4e8;
+            border-radius: 6px;
+            padding: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .repo-card.success { border-left: 4px solid #2cbe4e; }
+        .repo-card.failure { border-left: 4px solid #cb2431; }
+        .repo-card.pending { border-left: 4px solid #dbab09; }
+        .repo-card.unknown { border-left: 4px solid #959da5; }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 500;
+            color: white;
+        }
+        
+        .status-success { background: #2cbe4e; }
+        .status-failure, .status-timed_out, .status-cancelled, .status-action_required { background: #cb2431; }
+        .status-in_progress, .status-queued, .status-pending { background: #dbab09; }
+        .status-neutral, .status-unknown { background: #959da5; }
+        
+        .version-tag {
+            display: inline-block;
+            padding: 2px 6px;
+            background: #f1f8ff;
+            border: 1px solid #c8e1ff;
+            border-radius: 3px;
+            font-size: 0.85em;
+            color: #0366d6;
+            margin-left: 8px;
+        }
+        
+        .timestamp {
+            font-size: 0.8em;
+            color: #6a737d;
+            margin-top: 8px;
+        }
+        
+        a {
+            color: #0366d6;
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+        
+        h1, h2 {
+            border-bottom: 1px solid #eaecef;
+            padding-bottom: 0.3em;
+            margin-top: 24px;
+            margin-bottom: 16px;
+        }
+        
+        /* New styles for dependency section */
+        .dependency-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 20px 0;
+        }
+        
+        .dependency-box {
+            background: white;
+            border: 1px solid #e1e4e8;
+            border-radius: 6px;
+            padding: 16px;
+        }
+        
+        .dependency-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .dependency-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #eaecef;
+        }
+        
+        .dependency-count {
+            background: #f1f8ff;
+            padding: 2px 8px;
+            border-radius: 12px;
+            color: #0366d6;
+            font-size: 0.9em;
+        }
+        
+        .dependency-cycle {
+            color: #cb2431;
+            font-weight: 500;
+            padding: 8px;
+            background: #ffeef0;
+            border-radius: 4px;
+            margin: 4px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{{ org }} Build Status</h1>
+        
+        <div class="section">
+            <h2>🚀 Platform Monorepo Tests</h2>
+            <div class="grid">
+                {% for test in monorepo_tests.integration_tests %}
+                    <div class="workflow {{ test.status }}">
+                        <div class="test-header">
+                            <strong>Integration Test</strong>
+                        </div>
+                        <div class="test-name">
+                            <a href="{{ test.url }}">{{ test.name }}</a>
+                        </div>
+                        <div class="test-status">
+                            <span class="status-badge status-{{ test.status }}">{{ test.status }}</span>
+                        </div>
+                        <div class="timestamp">Last updated: {{ test.updated }}</div>
+                    </div>
+                {% endfor %}
+                {% for test in monorepo_tests.console_ui_tests %}
+                    <div class="workflow {{ test.status }}">
+                        <div class="test-header">
+                            <strong>Console UI Test</strong>
+                        </div>
+                        <div class="test-name">
+                            <a href="{{ test.url }}">{{ test.name }}</a>
+                        </div>
+                        <div class="test-status">
+                            <span class="status-badge status-{{ test.status }}">{{ test.status }}</span>
+                        </div>
+                        <div class="timestamp">Last updated: {{ test.updated }}</div>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        {% if dependency_data %}
+        <div class="section">
+            <h2>🔗 Repository Dependencies</h2>
+            <div class="dependency-grid">
+                <div class="dependency-box">
+                    <h3>Most Referenced Repositories</h3>
+                    <ul class="dependency-list">
+                        {% for repo, count in dependency_data.metrics.most_referenced[:5] %}
+                            <li class="dependency-item">
+                                <span>{{ repo }}</span>
+                                <span class="dependency-count">{{ count }} references</span>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <div class="dependency-box">
+                    <h3>Most Dependent Repositories</h3>
+                    <ul class="dependency-list">
+                        {% for repo, count in dependency_data.metrics.most_dependent[:5] %}
+                            <li class="dependency-item">
+                                <span>{{ repo }}</span>
+                                <span class="dependency-count">{{ count }} dependencies</span>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% if dependency_data.metrics.cycles %}
+                <div class="dependency-box" style="grid-column: 1 / -1">
+                    <h3>⚠️ Circular Dependencies</h3>
+                    {% for cycle in dependency_data.metrics.cycles %}
+                        <div class="dependency-cycle">
+                            {{ " → ".join(cycle) }} → {{ cycle[0] }}
+                        </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                <div class="timestamp">
+                    Last scanned: {{ dependency_data.last_updated }}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="section">
+            <h2>📦 All Repositories</h2>
+            <div class="grid">
+                {% for card in repo_cards %}
+                    {% set overall_status = card.overall.conclusion or card.overall.status or 'unknown' %}
+                    {% if overall_status == 'success' %}
+                        {% set card_class = 'success' %}
+                    {% elif overall_status in ['failure', 'timed_out', 'cancelled', 'action_required'] %}
+                        {% set card_class = 'failure' %}
+                    {% elif overall_status in ['in_progress', 'queued', 'pending'] %}
+                        {% set card_class = 'pending' %}
+                    {% else %}
+                        {% set card_class = 'unknown' %}
+                    {% endif %}
+                    <div class="repo-card {{ card_class }}">
+                        <div class="repo-header">
+                            <strong><a href="{{ card.html_url }}">{{ card.repo }}</a></strong>
+                            <span class="version-tag">{{ card.version }}</span>
+                            {% if card.overall.html_url %}
+                                <a href="{{ card.overall.html_url }}" class="status-badge status-{{ overall_status }}">
+                                    {{ card.overall.label }}
+                                </a>
+                            {% endif %}
+                            
+                            {% if dependency_data and card.repo in dependency_data.raw %}
+                                <div class="repo-dependencies">
+                                    <strong>Dependencies:</strong>
+                                    {% for dep in dependency_data.raw[card.repo] %}
+                                        <span class="dependency-tag">{{ dep }}</span>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                        
+                        {% if card.subtests %}
+                            <div class="subtests">
+                                {% for test in card.subtests %}
+                                    <div class="subtest">
+                                        <a href="{{ test.html_url }}">{{ test.label }}</a>
+                                        <span class="status-badge status-{{ test.status or test.conclusion or 'unknown' }}">
+                                            {{ test.status or test.conclusion or 'unknown' }}
+                                        </span>
+                                        {% if test.updated_at %}
+                                            <div class="timestamp">{{ test.updated_at }}</div>
+                                        {% endif %}
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div class="timestamp">
+            Generated at {{ generation_time }} · Auto-refreshes every 2 minutes
+        </div>
+    </div>
+</body>
+</html>

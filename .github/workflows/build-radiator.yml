@@ -28,7 +28,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install tomli PyYAML jinja2 requests
 
-      - name: Generate dashboard
+      - name: Scan dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          ORG: netboxlabs
+        run: |
+          # Run dependency scanners
+          python scripts/scan_dependencies/cross_repo_mentions.py
+          python scripts/scan_dependencies/check_helm_chart_info.py
+          python scripts/scan_dependencies/check_repo_releases.py
+          python scripts/scan_dependencies/enterprise_plugins.py
+          python scripts/scan_dependencies/scan_upstream_versions.py
+
+      - name: Generate dashboards
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           ORG: netboxlabs

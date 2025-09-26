@@ -1,14 +1,30 @@
-import base64, json, os, re
+import base64, json, os, re, sys
 from pathlib import Path
 import requests
 import tomllib as tomli  # Python 3.11 'tomllib'
 import yaml
-from jinja2 import Template
+from jinja2 import Template, Environment, FileSystemLoader
 from datetime import datetime, timezone
+import networkx as nx  # for dependency analysis
+import networkx as nx  # for dependency graph analysis
 
-ORG = os.environ.get("ORG","netboxlabs")
-TOKEN = os.environ["GH_TOKEN"]
-HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
+# Configuration
+try:
+    # Try different token environment variables used in GitHub Actions
+    TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not TOKEN:
+        raise KeyError("No GitHub token found")
+    
+    ORG = os.environ.get("ORG", "netboxlabs")
+    HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
+except KeyError as e:
+    print("Error: GitHub token not found in environment variables.")
+    print("Please ensure one of these environment variables is set:")
+    print("- GH_TOKEN: Personal access token")
+    print("- GITHUB_TOKEN: GitHub Actions token")
+    print("\nIn GitHub Actions, the token is automatically available as GITHUB_TOKEN")
+    print("For local development, you need to set GH_TOKEN manually.")
+    sys.exit(1)
 
 # Workflows to specifically monitor in the platform-monorepo
 MONITORED_WORKFLOWS = {
@@ -156,6 +172,39 @@ def read_file_version(owner, repo, path, ref):
         m = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", content)
         return m.group(1) if m else None
     return None
+
+def load_dependency_data():
+    """Load and analyze dependency data from the scanner output."""
+    try:
+        with open("data/cross_repo_mentions.json") as f:
+            dependencies = json.load(f)
+        
+        # Create a directed graph
+        G = nx.DiGraph()
+        
+        # Add all edges from dependencies
+        for repo, deps in dependencies.items():
+            for dep in deps:
+                G.add_edge(repo, dep)
+        
+        # Calculate some graph metrics
+        metrics = {
+            "most_referenced": sorted(G.in_degree(), key=lambda x: x[1], reverse=True),
+            "most_dependent": sorted(G.out_degree(), key=lambda x: x[1], reverse=True),
+            "cycles": list(nx.simple_cycles(G))
+        }
+        
+        return {
+            "raw": dependencies,
+            "metrics": metrics,
+            "last_updated": datetime.fromtimestamp(
+                Path("data/cross_repo_mentions.json").stat().st_mtime, 
+                timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S UTC")
+        }
+    except FileNotFoundError:
+        print("Warning: No dependency data found. Run scan_dependencies/cross_repo_mentions.py first.")
+        return None
 
 def detect_version(owner, repo, ref):
     """Try to detect version from various files."""
@@ -586,6 +635,7 @@ def render_dashboard():
     html = template.render(
         monorepo_tests=monorepo_tests,
         repo_cards=repo_cards,
+        dependency_data=dependency_data,
         generation_time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     )
     

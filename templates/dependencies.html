@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Repository Dependencies</title>
+    <style>
+        body {
+            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #0d1117;
+            color: #c9d1d9;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            margin: 0;
+            color: #58a6ff;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+            padding: 20px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+        }
+        .stat-card {
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #58a6ff;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #8b949e;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+        }
+        .card-header {
+            margin: -16px -16px 16px -16px;
+            padding: 16px;
+            background: #1c2128;
+            border-bottom: 1px solid #30363d;
+            border-radius: 6px 6px 0 0;
+        }
+        .card-header h2 {
+            margin: 0;
+            font-size: 1.25em;
+        }
+        .card-header a {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        .deps-section {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #30363d;
+        }
+        .deps-header {
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #58a6ff;
+        }
+        .deps-list {
+            display: grid;
+            gap: 8px;
+        }
+        .deps-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .deps-item a {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        .deps-item .commit-sha {
+            color: #8b949e;
+            font-family: ui-monospace,SFMono-Regular,SF Mono,Menlo,Consolas,Liberation Mono,monospace;
+        }
+        .nav-links {
+            margin-bottom: 20px;
+        }
+        .nav-links a {
+            color: #58a6ff;
+            text-decoration: none;
+            margin-right: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Repository Dependencies</h1>
+        <div class="nav-links">
+            <a href="index.html">View Tests Dashboard</a>
+        </div>
+    </div>
+    <div class="grid">
+        {% for card in cards %}
+            {% if card.dependencies.repos %}
+            <div class="card">
+                <div class="card-header">
+                    <h2>
+                        <a href="https://github.com/{{ card.owner }}/{{ card.repo }}" target="_blank">
+                            {{ card.repo }}
+                        </a>
+                    </h2>
+                </div>
+                
+                <div class="deps-list">
+                    {% for dep in card.dependencies.repos %}
+                        <div class="deps-item">
+                            <a href="{{ dep.url }}" target="_blank">{{ dep.name }}</a>
+                            <span class="commit-sha">{{ dep.sha }}</span>
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        {% endfor %}
+    </div>
+</body>
+</html>
