@@ -2,8 +2,10 @@ import os
 import re
 import json
 import sys
+import time
 import requests
 import base64
+from datetime import datetime
 from pathlib import Path
 
 # Configuration
@@ -32,9 +34,39 @@ UPSTREAM_VERSION_PATTERNS = {
     "diode": re.compile(r"diode.*?(1\.2\.0)", re.IGNORECASE)
 }
 
+def check_rate_limit():
+    """Check GitHub API rate limit status."""
+    try:
+        r = requests.get("https://api.github.com/rate_limit", headers=HEADERS)
+        r.raise_for_status()
+        data = r.json()
+        core = data["resources"]["core"]
+        remaining = core["remaining"]
+        reset_time = datetime.fromtimestamp(core["reset"]).strftime('%Y-%m-%d %H:%M:%S')
+        
+        if remaining < 100:  # Warning threshold
+            print(f"\n⚠️  GitHub API rate limit low: {remaining} requests remaining")
+            print(f"Rate limit will reset at {reset_time}")
+            
+        if remaining < 10:  # Critical threshold
+            print("Rate limit too low to continue safely.")
+            print("Waiting for rate limit reset...")
+            time.sleep(max(0, core["reset"] - time.time() + 1))
+            
+        return remaining
+    except Exception as e:
+        print(f"Warning: Could not check rate limit: {e}")
+        return None
+
 def gh(url, params=None):
     """Make a GitHub API request with auth token."""
     try:
+        # Check rate limit before making request
+        remaining = check_rate_limit()
+        if remaining is not None and remaining < 10:
+            print("Rate limit critically low, request aborted")
+            return None
+            
         r = requests.get(url, headers=HEADERS, params=params)
         r.raise_for_status()
         return r.json()
